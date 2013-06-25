@@ -28,6 +28,7 @@ object Nock5K {
     )
     sys.exit(1)
   }
+
   def main(args: Array[String]) = {
     val traceEnv = sys.env.getOrElse("NOCK_TRACE", "false")
     var trace = !((traceEnv equalsIgnoreCase "no") || (traceEnv == "0") || (traceEnv equalsIgnoreCase "false"))
@@ -123,8 +124,8 @@ class Nock5K(val inputs: Seq[(Option[File], PagedSeq[Char])], val trace: Boolean
     trace("/", in, in match {
       case a: Atom => { cite(34) ; crash(a) }
       case Cell(One, a) => { cite(10) ; a }
-      case Cell(Two, Cell(a, b)) => { cite(11) ; a }
-      case Cell(Three, Cell(a, b)) => { cite(12) ; b }
+      case Cell(Two, Cell(a, _)) => { cite(11) ; a }
+      case Cell(Three, Cell(_, b)) => { cite(12) ; b }
       case Cell(Atom(index), b) if (index % 2) == 0 => { cite(13) ; slash(Cell(Two, slash(Cell(Atom(index / 2), b)))) }
       case Cell(Atom(index), b) => { cite(14) ; slash(Cell(Three, slash(Cell(Atom((index - 1) / 2), b)))) }
       case noMatch => crash(noMatch)

@@ -1128,6 +1128,14 @@ static fn_ret_t f26(machine_t *machine, frame_t *frame, fat_noun_t root) {
   return (fn_ret_t){ .root = next_root, .op = nock_op };
 }
 
+static fn_ret_t f27(machine_t *machine, frame_t *frame, fat_noun_t root) {
+  TF();
+  heap_t *heap = machine->heap;
+  fat_noun_t next_root = SHARE(CELL(CELL(root, L(frame->data)), R(R(R(frame->data)))), ROOT_OWNER);
+  machine->stack = stack_pop(machine->stack, /* unshare */ true, heap);
+  return (fn_ret_t){ .root = next_root, .op = nock_op };
+}
+
 static fn_ret_t cond2(machine_t *machine, frame_t *frame, fat_noun_t root) {
   TF();
   fat_noun_t data = frame->data;
@@ -1155,7 +1163,6 @@ static fn_ret_t cond2(machine_t *machine, frame_t *frame, fat_noun_t root) {
 static fn_ret_t cond1(machine_t *machine, fat_noun_t root) {
   TF();
   heap_t *heap = machine->heap;
-  bool reduce = false;
   fat_noun_t a = L(root);
   fat_noun_t r = R(root);
   fat_noun_t rr = R(r);
@@ -1164,11 +1171,12 @@ static fn_ret_t cond1(machine_t *machine, fat_noun_t root) {
   fat_noun_t c = L(rrr);
   fat_noun_t d = R(rrr);
   fat_noun_t next_root;
-  if (reduce) {
-    next_root = SHARE(CELL(a, CELL(_2, CELL(CELL(_0, _1), CELL(_2, CELL(CELL(_1, CELL(c, d)), CELL(CELL(_1, _0), CELL(_2, CELL(CELL(_1, CELL(_2, _3)), CELL(CELL(_1, _0), CELL(_4, CELL(_4, b))))))))))), ROOT_OWNER);
-  } else {
+  bool implement_directly = true;
+  if (implement_directly) {
     next_root = SHARE(CELL(a, b), ROOT_OWNER);
     stack_push(machine->stack, FRAME(cond2, CELL(a, CELL(c, d))), /* share */ true, heap);
+  } else {
+    next_root = SHARE(CELL(a, CELL(_2, CELL(CELL(_0, _1), CELL(_2, CELL(CELL(_1, CELL(c, d)), CELL(CELL(_1, _0), CELL(_2, CELL(CELL(_1, CELL(_2, _3)), CELL(CELL(_1, _0), CELL(_4, CELL(_4, b))))))))))), ROOT_OWNER);
   }
   return (fn_ret_t){ .root = next_root, .op = nock_op };
 }
@@ -1235,8 +1243,7 @@ static fat_noun_t nock5k_run_impl(machine_t *machine, enum op_t op, fat_noun_t r
 		  bool implement_directly = true;
 		  if (implement_directly) {
 		    // 7r ::     *[a 7 b c]         *[*[a b] c]
-		    CITE(21); fat_noun_t nxt1 = CELL(L(root), L(rr));
-		    fat_noun_t nxt2 = R(rr); CALL1(nock_op, nxt1, f26, nxt2);
+		    fat_noun_t nxt1 = CELL(L(root), L(rr)); fat_noun_t nxt2 = R(rr); CALL1(nock_op, nxt1, f26, nxt2);
 		  } else {
 		    fat_noun_t nxt = CELL(L(root), CELL(_2, CELL(L(rr), CELL(_1, R(rr)))));
 		    TAIL_CALL(nock_op, nxt);
@@ -1246,9 +1253,14 @@ static fat_noun_t nock5k_run_impl(machine_t *machine, enum op_t op, fat_noun_t r
 	      case 8: { fat_noun_t rr = R(r);
 		if (T(rr) == cell_type) { 
 		  CITE(27); 
-		  // TODO: implement direct reduction
-		  fat_noun_t nxt = CELL(L(root), CELL(_7, CELL(CELL(CELL(_7, CELL(CELL(_0, _1), L(rr))), CELL(_0, _1)), R(rr))));
-		  TAIL_CALL(nock_op, nxt);
+		  bool implement_directly = true;
+		  if (implement_directly) {
+		    // 8r ::     *[a 8 b c]        *[[*[a b] a] c]
+		    fat_noun_t l = L(root); fat_noun_t nxt1 = CELL(l, L(rr)); CALL1(nock_op, nxt1, f27, root);
+		  } else {
+		    fat_noun_t nxt = CELL(L(root), CELL(_7, CELL(CELL(CELL(_7, CELL(CELL(_0, _1), L(rr))), CELL(_0, _1)), R(rr))));
+		    TAIL_CALL(nock_op, nxt);
+		  }
 		} else CRASH(machine);
 	      }
 	      case 9: { fat_noun_t rr = R(r);
@@ -1392,35 +1404,35 @@ static fat_noun_t nock5k_run_impl(machine_t *machine, enum op_t op, fat_noun_t r
 
 static void alloc_atoms(heap_t *heap) {
 #if NO_SATOMS
-  _NULL = noun_share(batom_new_ui(heap, SATOM_MAX), heap, HEAP_OWNER);
-  _0 = noun_share(batom_new_ui(heap, 0), heap, HEAP_OWNER);
-  _1 = noun_share(batom_new_ui(heap, 1), heap, HEAP_OWNER);
-  _2 = noun_share(batom_new_ui(heap, 2), heap, HEAP_OWNER);
-  _3 = noun_share(batom_new_ui(heap, 3), heap, HEAP_OWNER);
-  _4 = noun_share(batom_new_ui(heap, 4), heap, HEAP_OWNER);
-  _5 = noun_share(batom_new_ui(heap, 5), heap, HEAP_OWNER);
-  _6 = noun_share(batom_new_ui(heap, 6), heap, HEAP_OWNER);
-  _7 = noun_share(batom_new_ui(heap, 7), heap, HEAP_OWNER);
-  _8 = noun_share(batom_new_ui(heap, 8), heap, HEAP_OWNER);
-  _9 = noun_share(batom_new_ui(heap, 9), heap, HEAP_OWNER);
-  _10 = noun_share(batom_new_ui(heap, 10), heap, HEAP_OWNER);
+  _NULL = SHARE(batom_new_ui(heap, SATOM_MAX), HEAP_OWNER);
+  _0 = SHARE(batom_new_ui(heap, 0), HEAP_OWNER);
+  _1 = SHARE(batom_new_ui(heap, 1), HEAP_OWNER);
+  _2 = SHARE(batom_new_ui(heap, 2), HEAP_OWNER);
+  _3 = SHARE(batom_new_ui(heap, 3), HEAP_OWNER);
+  _4 = SHARE(batom_new_ui(heap, 4), HEAP_OWNER);
+  _5 = SHARE(batom_new_ui(heap, 5), HEAP_OWNER);
+  _6 = SHARE(batom_new_ui(heap, 6), HEAP_OWNER);
+  _7 = SHARE(batom_new_ui(heap, 7), HEAP_OWNER);
+  _8 = SHARE(batom_new_ui(heap, 8), HEAP_OWNER);
+  _9 = SHARE(batom_new_ui(heap, 9), HEAP_OWNER);
+  _10 = SHARE(batom_new_ui(heap, 10), HEAP_OWNER);
 #endif
 }
 
 static void free_atoms(heap_t *heap) {
 #if NO_SATOMS
-  noun_unshare(_NULL, heap, true, HEAP_OWNER);
-  noun_unshare(_0, heap, true, HEAP_OWNER);
-  noun_unshare(_1, heap, true, HEAP_OWNER);
-  noun_unshare(_2, heap, true, HEAP_OWNER);
-  noun_unshare(_3, heap, true, HEAP_OWNER);
-  noun_unshare(_4, heap, true, HEAP_OWNER);
-  noun_unshare(_5, heap, true, HEAP_OWNER);
-  noun_unshare(_6, heap, true, HEAP_OWNER);
-  noun_unshare(_7, heap, true, HEAP_OWNER);
-  noun_unshare(_8, heap, true, HEAP_OWNER);
-  noun_unshare(_9, heap, true, HEAP_OWNER);
-  noun_unshare(_10, heap, true, HEAP_OWNER);
+  UNSHARE(_NULL, HEAP_OWNER);
+  UNSHARE(_0, HEAP_OWNER);
+  UNSHARE(_1, HEAP_OWNER);
+  UNSHARE(_2, HEAP_OWNER);
+  UNSHARE(_3, HEAP_OWNER);
+  UNSHARE(_4, HEAP_OWNER);
+  UNSHARE(_5, HEAP_OWNER);
+  UNSHARE(_6, HEAP_OWNER);
+  UNSHARE(_7, HEAP_OWNER);
+  UNSHARE(_8, HEAP_OWNER);
+  UNSHARE(_9, HEAP_OWNER);
+  UNSHARE(_10, HEAP_OWNER);
 #endif
 }
 

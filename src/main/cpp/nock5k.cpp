@@ -155,16 +155,19 @@ typedef struct heap {
   unsigned long batom_to_unshared;
 #endif
 #if ALLOC_DEBUG
+  // A linked list of all allocated cells:
   unsigned long current_id;
   base_t *first;
   base_t *last;
 #endif
 #if CELL_FREE_LIST
+  // A circular buffer of freed cells:
   unsigned int cell_free_list_start;
   unsigned int cell_free_list_size;
   cell_t *cell_free_list[CELL_FREE_LIST_SIZE];
 #endif
 #if SHARED_CELL_LIST
+  // TODO: Keep the pointers to cell_t* as well (for updating in place).
   unsigned int shared_cell_list_size;
   cell_t *shared_cell_list[SHARED_CELL_LIST_SIZE];
 #endif
@@ -196,7 +199,7 @@ heap_print_stats(heap_t *heap, FILE *file) {
   for (base_t *base = heap->first; base != NULL; base = base->next) {
     if (base_get_refs(base) != ALLOC_FREE_MARKER) {
       base_print_header(file, "not freed: ", base, "\n");
-      base_print_owners(file, "    ", base, "\n");
+      base_print_owners(file, "   owners: ", base, "\n");
     }
   }
 #endif
@@ -1072,10 +1075,10 @@ static fn_ret_t f16p2(machine_t *machine, frame_t *frame, fat_noun_t root) {
 static fn_ret_t f16p1(machine_t *machine, frame_t *frame, fat_noun_t root) {
   TF();
   heap_t *heap = machine->heap;
-  fat_noun_t data = SHARE(frame->data, ROOT_OWNER);
+  fat_noun_t next_root = SHARE(frame->data, ROOT_OWNER);
   frame->fn = f16p2;
   ASSIGN(frame->data, root, STACK_OWNER);
-  return (fn_ret_t){ .root = data, .op = nock_op };
+  return (fn_ret_t){ .root = next_root, .op = nock_op };
 }
 
 static fn_ret_t f20p2(machine_t *machine, frame_t *frame, fat_noun_t root) {
@@ -1090,10 +1093,10 @@ static fn_ret_t f20p1(machine_t *machine, frame_t *frame, fat_noun_t root) {
   TF();
   heap_t *heap = machine->heap;
   FILE *file = machine->file;
-  fat_noun_t data = SHARE(frame->data, ROOT_OWNER);
+  fat_noun_t next_root = SHARE(frame->data, ROOT_OWNER);
   frame->fn = f20p2;
   ASSIGN(frame->data, root, STACK_OWNER);
-  return (fn_ret_t){ .root = data, .op = nock_op };
+  return (fn_ret_t){ .root = next_root, .op = nock_op };
 }
 
 static fn_ret_t f21(machine_t *machine, frame_t *frame, fat_noun_t root) {
@@ -1115,6 +1118,14 @@ static fn_ret_t f23(machine_t *machine, frame_t *frame, fat_noun_t root) {
   heap_t *heap = machine->heap;
   machine->stack = stack_pop(machine->stack, /* unshare */ false, heap);
   return (fn_ret_t){ .root = SHARE(root, ROOT_OWNER), .op = equals_op };
+}
+
+static fn_ret_t f26(machine_t *machine, frame_t *frame, fat_noun_t root) {
+  TF();
+  heap_t *heap = machine->heap;
+  fat_noun_t next_root = SHARE(CELL(root, frame->data), ROOT_OWNER);
+  machine->stack = stack_pop(machine->stack, /* unshare */ true, heap);
+  return (fn_ret_t){ .root = next_root, .op = nock_op };
 }
 
 static fn_ret_t cond2(machine_t *machine, frame_t *frame, fat_noun_t root) {
@@ -1221,9 +1232,15 @@ static fat_noun_t nock5k_run_impl(machine_t *machine, enum op_t op, fat_noun_t r
 	      case 7: { fat_noun_t rr = R(r);
 		if (T(rr) == cell_type) { 
 		  CITE(26); 
-		  // TODO: implement direct reduction
-		  fat_noun_t nxt = CELL(L(root), CELL(_2, CELL(L(rr), CELL(_1, R(rr)))));
-		  TAIL_CALL(nock_op, nxt);
+		  bool implement_directly = true;
+		  if (implement_directly) {
+		    // 7r ::     *[a 7 b c]         *[*[a b] c]
+		    CITE(21); fat_noun_t nxt1 = CELL(L(root), L(rr));
+		    fat_noun_t nxt2 = R(rr); CALL1(nock_op, nxt1, f26, nxt2);
+		  } else {
+		    fat_noun_t nxt = CELL(L(root), CELL(_2, CELL(L(rr), CELL(_1, R(rr)))));
+		    TAIL_CALL(nock_op, nxt);
+		  }
 		} else CRASH(machine);
 	      }
 	      case 8: { fat_noun_t rr = R(r);
@@ -1462,8 +1479,6 @@ static void nock5k_run(int n_inputs, infile_t *inputs, bool trace_flag, bool int
     machine.file = stdout;
     machine.trace_flag = trace_flag;
     bool eof = false;
-    // printf("fib(10)="); noun_print(stdout, fib(&machine, satom_as_noun(10)), true); printf("\n");//ZZZ
-    printf("sizeof(int)=%lu, sizeof(void *)=%lu %d %d %d\n", sizeof(int), sizeof(void*), __builtin_clz(1), __builtin_clz(16), __builtin_clz(256));//ZZZ
     do {
       // TODO: use readline (or editline)
       if (interactive_flag) printf("> ");

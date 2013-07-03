@@ -15,6 +15,9 @@ nock5k-llvm: build_dir ${SRC}/nock5k.cpp ${SRC}/lib.cpp
 nock5k.s: build_dir ${SRC}/nock5k.cpp
 	c++ -DNOCK_LLVM=false -I${SRC} ${OPT} -S -emit-llvm ${SRC}/nock5k.cpp -o build/nock5k.s
 
+nock5k.i: build_dir ${SRC}/nock5k.cpp
+	c++ -DNOCK_LLVM=false -I${SRC} -E ${SRC}/nock5k.cpp -o build/nock5k.i
+
 lib.s: build_dir ${SRC}/lib.cpp
 	c++ -DNOCK_LLVM=false -I${SRC} ${OPT} -S -emit-llvm ${SRC}/lib.cpp -o build/lib.s
 

@@ -1269,11 +1269,6 @@ static fat_noun_t nock5k_run_impl(machine_t *machine, enum op_t op, fat_noun_t r
       }
     }
 
-
-      // 28 / 0x11100
-      // msb = (64 - 59 - 1) = 4
-      // mask = (1 << 3) = 0x1000
-
     case slash_op: {
       if (T(root) == cell_type) {
 	fat_noun_t l = L(root);

@@ -2,7 +2,7 @@
 
 LLVM_CC_FLAGS=`llvm-config --cflags`
 LLVM_LINK_FLAGS=`llvm-config --libs --cflags --ldflags core analysis executionengine jit interpreter native`
-OPT=-O4
+OPT=-g
 SRC=src/main/cpp
 
 nock5k: build_dir ${SRC}/nock5k.cpp

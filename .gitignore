@@ -1,5 +1,9 @@
 *.class
 *.log
+*~
+*.txt
+build/
+trash/
 
 # sbt specific
 dist/*

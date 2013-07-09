@@ -3,6 +3,11 @@
 
 #include "nock5k.h"
 
+#include <vector>
+
+#define ENV_CHECK_VOID(p, msg) do { const char *pstr = #p; if (!(p)) { env_fail(env, pstr, msg, __FILE__, __FUNCTION__, __LINE__); return; } } while(false)
+#define ENV_CHECK(p, msg, val) do { const char *pstr = #p; if (!(p)) { env_fail(env, pstr, msg, __FILE__, __FUNCTION__, __LINE__); return val; } } while(false)
+
 __thread machine_t *machine;
 
 void machine_set(machine_t *m) {
@@ -68,7 +73,7 @@ fib(fat_noun_t n) {
   }
 }
 
-#define CALLOC(t) ((t *)calloc(1, sizeof(t)))
+#define ALLOC(t) ((t *)calloc(1, sizeof(t)))
 #define _YES _0
 #define _NO _1
 #if ALLOC_DEBUG
@@ -83,36 +88,44 @@ fib(fat_noun_t n) {
 typedef uint32_t jit_address_t;
 #define JIT_ADDRESS_MAX UINT32_MAX
 
-//QQQ: delete/free functions
-//QQQ: should be fail-ing and not asserting on failure (where possible; grep for ASSERT and consider each one)
-
 typedef struct {
-  fat_noun_t locals[16]; //QQQ: TODO: should grow (up to MAX)
-  fat_noun_t stack[16]; //QQQ: TODO: should grow (up to MAX)
-  jit_address_t stackp;
-  fat_noun_t args; // QQQ: should start as "args_placeholder" and get updated as "args_placeholder" is "pushed down" -- defines the "shape" of the input (and # of args)
+  // REVISIT: replace STL uses with small C classes?
+  std::vector<fat_noun_t> locals;
+  std::vector<fat_noun_t> next_locals;
+  std::vector<fat_noun_t> stack;
+  fat_noun_t args; // ZZZ: should start as "args_placeholder" and get updated as "args_placeholder" is "pushed down" -- defines the "shape" of the input (and # of args)
   fat_noun_t args_placeholder;
-  fat_noun_t vars;
-  jit_address_t index;
+  fat_noun_t local_variable_index_map;
+  jit_address_t next_local_variable_index;
   bool failed;
+  const char *predicate;
   const char *failure_message;
+  const char *file;
+  const char *function;
+  int line_number;
 } env_t;
 
 static void
-env_fail(env_t *env, const char *failure_message) {
+env_fail(env_t *env, const char *predicate, const char *failure_message, const char *file, const char *function, int line_number) {
   env->failed = true;
+  env->predicate = predicate;
   env->failure_message = failure_message;
+  env->file = file;
+  env->function = function;
+  env->line_number = line_number;
+
+  nock_log(ERROR_PREFIX " Failure to compile: predicate = '%s', message = '%s', file = '%s', function = '%s', line = %d\n", predicate, failure_message, file, function, line_number);
 }
 
 static jit_address_t
-env_noun_at(env_t *env, jit_address_t address) {
-  fat_noun_t noun = env->vars;
+env_get_value_at_address(env_t *env, jit_address_t address) {
+  fat_noun_t noun = env->local_variable_index_map;
 
   if (address == 1) {
     ASSERT(!NOUN_EQUALS(noun, env->args_placeholder), "!NOUN_EQUALS(noun, env->args_placeholder)\n");// ZZZ: do something
-    ASSERT(noun_get_type(noun) == satom_type, "\n");
+    ENV_CHECK(noun_get_type(noun) == satom_type, "Unknown failure", 0);
     satom_t satom = noun_as_satom(noun);
-    ASSERT((satom_t)(jit_address_t)satom == satom, "(satom_t)(jit_address_t)satom == satom\n");
+    ENV_CHECK((satom_t)(jit_address_t)satom == satom, "Unknown failure", 0);
     return (jit_address_t)satom;
   }
 
@@ -124,9 +137,9 @@ env_noun_at(env_t *env, jit_address_t address) {
     if (NOUN_EQUALS(noun, env->args_placeholder)) {
       noun = cell_new(machine->heap, env->args_placeholder, env->args_placeholder);
       if (i == 0)
-	ASSIGN(env->vars, noun, ROOT_OWNER);
+	ASSIGN(env->local_variable_index_map, noun, ROOT_OWNER);
     }
-    // QQQ: check if cell else fail
+    // ZZZ: check if cell else fail
     noun = (mask & address) ? noun_get_right(noun) : noun_get_left(noun);
     mask = (mask >> 1);
   }
@@ -135,54 +148,83 @@ env_noun_at(env_t *env, jit_address_t address) {
     //ZZZ: maps arg to locals here and adjust parent cell
   }
 
-  ASSERT(noun_get_type(noun) == satom_type, "noun_get_type(noun) == satom_type\n");
+  ENV_CHECK(noun_get_type(noun) == satom_type, "Unknown failure", 0);
   satom_t satom = noun_as_satom(noun);
-  ASSERT((satom_t)(jit_address_t)satom == satom, "(satom_t)(jit_address_t)satom == satom\n");
+  ENV_CHECK((satom_t)(jit_address_t)satom == satom, "Unknown failure", 0);
   return (jit_address_t)satom;
 }
 
 env_t *env_new() {
-  env_t *env = CALLOC(env_t);
+  env_t *env = ALLOC(env_t);
 
-#if NOCK_ASSERT
-  for (jit_address_t i = 0; i < sizeof(env->locals) / sizeof(env->locals[0]); ++i)
-    env->locals[i] = _NULL;
-#endif
-
-  env->args_placeholder = batom_new_ui(machine->heap, 12345); // QQQ: some other distinguishing value?
+  // Use an "impossible" value as the placeholder:
+  env->args_placeholder = batom_new_ui(machine->heap, JIT_ADDRESS_MAX + 1);
   SHARE(env->args_placeholder, ROOT_OWNER);
-  env->vars = env->args_placeholder;
+  env->local_variable_index_map = env->args_placeholder;
 
   return env;
 }
 
+void env_delete(env_t *env) {
+  // ZZZ: unshare locals? args, local_variable_index_map, args_placeholder?
+  ENV_CHECK_VOID(env->stack.size() == 0, "Stack should be empty");
+  env->stack.~vector();
+  free(env);
+}
+
 void env_push(env_t *env, fat_noun_t n) {
-  // QQQ: ref count? 
   if (env->failed) return;
-  if (env->stackp == JIT_ADDRESS_MAX) {
-    env_fail(env, "Stack overflow");
-    return;
-  }
-  env->stack[env->stackp++] = n;
+  ENV_CHECK_VOID(env->stack.size() < JIT_ADDRESS_MAX, "Stack overflow");
+  SHARE(n, STACK_OWNER);
+  env->stack.push_back(n);
 }
 
 fat_noun_t env_pop(env_t *env) {
-  // QQQ: ref count?
-  if (env->failed) return _NULL;
-  if (env->stackp == 0) {
-    env_fail(env, "Stack underflow");
-    return _NULL;
+  if (env->failed) return _UNDEFINED;
+  ENV_CHECK(env->stack.size() > 0, "Stack underflow", _UNDEFINED);
+  fat_noun_t result = env->stack.back();
+  env->stack.pop_back();
+  UNSHARE(result, STACK_OWNER);
+  return result;
+}
+
+static void env_set_local(env_t *env, jit_address_t index, fat_noun_t new_local, bool decl) {
+  if (env->failed) return;
+  if (decl) {
+    if (index >= env->locals.size()) {
+      env->locals.resize(index + 1, _UNDEFINED);
+      env->next_locals.resize(index + 1, _UNDEFINED);
+    }
+  } else {
+    ENV_CHECK_VOID(index < env->locals.size(), "Unknown failure");
   }
-  return env->stack[--env->stackp];
+
+  SHARE(new_local, STACK_OWNER);
+  fat_noun_t old_local = env->next_locals[index];
+  if (decl) {
+    ENV_CHECK_VOID(IS_UNDEFINED(old_local), "Unknown failure");
+  } else {
+    ENV_CHECK_VOID(!IS_UNDEFINED(old_local), "Unknown failure");
+    UNSHARE(old_local, STACK_OWNER);
+  }
+  env->next_locals[index] = new_local;
+}
+
+static fat_noun_t env_get_local(env_t *env, jit_address_t index) {
+  if (env->failed) return _UNDEFINED;
+  fat_noun_t result = env->locals[index];
+  ENV_CHECK(!IS_UNDEFINED(result), "Unknown failure", _UNDEFINED);
+  return result;
 }
 
 typedef void (*eval_fn_t)(struct jit_oper *oper, env_t *env);
+typedef void (*delete_fn_t)(struct jit_oper *oper);
 
 typedef struct jit_oper {
   struct jit_oper *outer;
   eval_fn_t eval_fn;
-  uint32_t line; // QQQ: TODO
-  uint32_t column; // QQQ: TODO
+  delete_fn_t delete_fn;
+  // TODO: source information: file, line, column
 } jit_oper_t;
 
 typedef struct jit_expr_t {
@@ -194,48 +236,57 @@ typedef struct jit_expr_t {
 typedef struct jit_decl {
   jit_oper_t base;
   jit_oper_t *inner;
-  fat_noun_t vars;
+  fat_noun_t local_variable_initial_values;
 } jit_decl_t;
 
 #define decl_as_oper(decl) (&(decl)->base)
+#define oper_as_decl(oper) ((jit_decl_t *)(oper))
 
-static fat_noun_t decl_eval_impl(env_t *env, fat_noun_t vars) {
-  if (noun_get_type(vars) == cell_type) {
-    fat_noun_t left = decl_eval_impl(env, noun_get_left(vars));
-    fat_noun_t right = decl_eval_impl(env, noun_get_right(vars));
+static fat_noun_t decl_eval_impl(env_t *env, fat_noun_t local_variable_initial_values) {
+  if (noun_get_type(local_variable_initial_values) == cell_type) {
+    fat_noun_t left = decl_eval_impl(env, noun_get_left(local_variable_initial_values));
+    fat_noun_t right = decl_eval_impl(env, noun_get_right(local_variable_initial_values));
     return cell_new(machine->heap, left, right);
   } else {
-    env->locals[env->index] = vars;
-    SHARE(vars, STACK_OWNER);
-    // QQQ: check for index overflow
-    return satom_as_noun(env->index++);
+    env_set_local(env, env->next_local_variable_index, local_variable_initial_values, /* decl */ true);
+    ENV_CHECK(env->next_local_variable_index < JIT_ADDRESS_MAX, "Too many local variable declarations", _UNDEFINED);
+    return satom_as_noun(env->next_local_variable_index++);
   }
 }
 
 void decl_eval(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
 
-  jit_decl_t *decl = (jit_decl_t *)oper;
+  jit_decl_t *decl = oper_as_decl(oper);
 
-  fat_noun_t added_vars = decl_eval_impl(env, decl->vars);
-  fat_noun_t new_env_vars = cell_new(machine->heap, added_vars, env->vars);
+  fat_noun_t added_local_variable_index_map = decl_eval_impl(env, decl->local_variable_initial_values);
+  fat_noun_t new_local_variable_index_map = cell_new(machine->heap, added_local_variable_index_map, env->local_variable_index_map);
 
-  ASSIGN(env->vars, new_env_vars, ROOT_OWNER);
+  ASSIGN(env->local_variable_index_map, new_local_variable_index_map, ROOT_OWNER);
 
   (decl->inner->eval_fn)(decl->inner, env);
 }
 
-jit_decl_t *decl_new(fat_noun_t vars) {
-  jit_decl_t *decl = CALLOC(jit_decl_t);
+void decl_delete(jit_oper_t *oper) {
+  jit_decl_t *decl = oper_as_decl(oper);
+  UNSHARE(decl->local_variable_initial_values, ROOT_OWNER);
+  (decl->inner->delete_fn)(decl->inner);
+  free(decl);
+}
 
-  decl->vars = vars;
+jit_decl_t *decl_new(fat_noun_t local_variable_initial_values) {
+  jit_decl_t *decl = ALLOC(jit_decl_t);
+
+  SHARE(local_variable_initial_values, ROOT_OWNER);
+  decl->local_variable_initial_values = local_variable_initial_values;
   decl_as_oper(decl)->eval_fn = decl_eval;
+  decl_as_oper(decl)->delete_fn = decl_delete;
 
   return decl;
 }
 
 void decl_set_inner(jit_decl_t *decl, jit_oper_t *inner) {
-  ASSERT(decl->inner == NULL, "decl->inner == NULL\n");
+  ASSERT(decl->inner == NULL, "decl->inner == NULL");
   decl->inner = inner;
   inner->outer = decl_as_oper(decl);
 }
@@ -254,11 +305,12 @@ typedef struct jit_binop {
 
 #define binop_as_expr(binop) (&(binop)->expr)
 #define binop_as_oper(binop) expr_as_oper(binop_as_expr(binop))
+#define oper_as_binop(oper) ((jit_binop_t *)(oper))
 
 void binop_eval(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
 
-  jit_binop_t *binop = (jit_binop_t *)oper;
+  jit_binop_t *binop = oper_as_binop(oper);
 
   jit_oper_t *left = expr_as_oper(binop->left);
   (left->eval_fn)(left, env);
@@ -279,11 +331,21 @@ void binop_eval(jit_oper_t *oper, env_t *env) {
   }
 }
 
+void binop_delete(jit_oper_t *oper) {
+  jit_binop_t *binop = oper_as_binop(oper);
+
+  (expr_as_oper(binop->left)->delete_fn)(expr_as_oper(binop->left));
+  (expr_as_oper(binop->right)->delete_fn)(expr_as_oper(binop->right));
+
+  free(binop);
+}
+
 jit_binop_t *binop_new(enum binop_type type) {
-  jit_binop_t *binop = CALLOC(jit_binop_t);
+  jit_binop_t *binop = ALLOC(jit_binop_t);
 
   binop->type = type;
   binop_as_oper(binop)->eval_fn = binop_eval;
+  binop_as_oper(binop)->delete_fn = binop_delete;
 
   return binop;
 }
@@ -307,6 +369,7 @@ typedef struct jit_inc {
 
 #define inc_as_expr(inc) (&(inc)->expr)
 #define inc_as_oper(inc) expr_as_oper(inc_as_expr(inc))
+#define oper_as_inc(oper) ((jit_inc_t *)(oper))
 
 void inc_eval(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
@@ -314,10 +377,19 @@ void inc_eval(jit_oper_t *oper, env_t *env) {
   env_push(env, inc(env_pop(env)));
 }
 
+void inc_delete(jit_oper_t *oper) {
+  jit_inc_t *inc = oper_as_inc(oper);
+
+  (expr_as_oper(inc->subexpr)->delete_fn)(expr_as_oper(inc->subexpr));
+
+  free(inc);
+}
+
 jit_inc_t *inc_new() {
-  jit_inc_t *inc = CALLOC(jit_inc_t);
+  jit_inc_t *inc = ALLOC(jit_inc_t);
 
   inc_as_oper(inc)->eval_fn = inc_eval;
+  inc_as_oper(inc)->delete_fn = inc_delete;
 
   return inc;
 }
@@ -335,20 +407,25 @@ typedef struct jit_load {
 
 #define load_as_expr(load) (&(load)->expr)
 #define load_as_oper(load) expr_as_oper(load_as_expr(load))
+#define oper_as_load(oper) ((jit_load_t *)(oper))
 
 void load_eval(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
+  env_push(env, env_get_local(env, env_get_value_at_address(env, oper_as_load(oper)->address)));
+}
 
-  fat_noun_t result = env->locals[env_noun_at(env, ((jit_load_t *)oper)->address)];
-  ASSERT(!IS_NULL(result), "!IS_NULL(result)\n");
-  env_push(env, result);
+void load_delete(jit_oper_t *oper) {
+  jit_load_t *load = (jit_load_t *)oper;
+
+  free(load);
 }
 
 jit_load_t *load_new(jit_address_t address) {
-  jit_load_t *load = CALLOC(jit_load_t);
+  jit_load_t *load = ALLOC(jit_load_t);
 
   load->address = address;
   load_as_oper(load)->eval_fn = load_eval;
+  load_as_oper(load)->delete_fn = load_delete;
 
   return load;
 }
@@ -361,6 +438,7 @@ typedef struct jit_store {
 
 #define store_as_expr(store) (&(store)->expr)
 #define store_as_oper(store) expr_as_oper(store_as_expr(store))
+#define oper_as_store(oper) ((jit_store_t *)(oper))
 
 void store_eval(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
@@ -369,16 +447,21 @@ void store_eval(jit_oper_t *oper, env_t *env) {
   jit_oper_t *subexpr = expr_as_oper(store->subexpr);
   (subexpr->eval_fn)(subexpr, env);
 
-  ASSERT(env->stackp > 0, "env->stackp > 0\n");
-  // QQQ: ref count?
-  env->locals[env_noun_at(env, ((jit_load_t *)oper)->address)] = env_pop(env);
+  env_set_local(env, env_get_value_at_address(env, oper_as_load(oper)->address), env_pop(env), /* decl */ false);
+}
+
+void store_delete(jit_oper_t *oper) {
+  jit_store_t *store = oper_as_store(oper);
+
+  free(store);
 }
 
 jit_store_t *store_new(jit_address_t address) {
-  jit_store_t *store = CALLOC(jit_store_t);
+  jit_store_t *store = ALLOC(jit_store_t);
 
   store->address = address;
   store_as_oper(store)->eval_fn = store_eval;
+  store_as_oper(store)->delete_fn = store_delete;
 
   return store;
 }
@@ -404,11 +487,12 @@ typedef struct jit_loop {
 
 #define loop_as_expr(loop) (&(loop)->expr)
 #define loop_as_oper(loop) expr_as_oper(loop_as_expr(loop))
+#define oper_as_loop(oper) ((jit_loop_t *)(oper))
 
 void loop_eval(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
 
-  jit_loop_t *loop = (jit_loop_t *)oper;
+  jit_loop_t *loop = oper_as_loop(oper);
   while (true) {
     jit_oper_t *test = expr_as_oper(loop->test);
     (test->eval_fn)(test, env);
@@ -419,21 +503,43 @@ void loop_eval(jit_oper_t *oper, env_t *env) {
       (result->eval_fn)(result, env);
       return;
     } else {
-      // QQQ: make copies of local vars first?!
       jit_store_list_t *store_list = loop->first_store;
       while (store_list != NULL) {
 	jit_oper_t *store = store_as_oper(store_list->store);
 	(store->eval_fn)(store, env);
 	store_list = store_list->next;
       }
+      // Copy the locals for the next iteration:
+      env->locals = env->next_locals;
     }
   }
 }
 
+void loop_delete(jit_oper_t *oper) {
+  jit_loop_t *loop = oper_as_loop(oper);
+  jit_oper_t *test = expr_as_oper(loop->test);
+  jit_oper_t *result = expr_as_oper(loop->result);
+  
+  (test->delete_fn)(test);
+  (result->delete_fn)(result);
+
+  jit_store_list_t *store_list = loop->first_store;
+  while (store_list != NULL) {
+    jit_oper_t *store = store_as_oper(store_list->store);
+    (store->delete_fn)(store);
+    jit_store_list_t *next = store_list->next;
+    free(store_list);
+    store_list = next;
+  }
+
+  free(loop);
+}
+
 jit_loop_t *loop_new() {
-  jit_loop_t *loop = CALLOC(jit_loop_t);
+  jit_loop_t *loop = ALLOC(jit_loop_t);
 
   loop_as_oper(loop)->eval_fn = loop_eval;
+  loop_as_oper(loop)->delete_fn = loop_delete;
 
   return loop;
 }
@@ -451,7 +557,7 @@ void loop_set_result(jit_loop_t *loop, jit_expr_t *result) {
 }
 
 void loop_add_store(jit_loop_t *loop, jit_store_t *store) {
-  jit_store_list_t *store_list = CALLOC(jit_store_list_t);
+  jit_store_list_t *store_list = ALLOC(jit_store_list_t);
   store_list->store = store;
   
   store_as_oper(store)->outer = loop_as_oper(loop);
@@ -503,12 +609,16 @@ void compile_fib() {
   /**/ binop_set_right(add, load_as_expr(add_right));
 
   env_t *env = env_new();
+
   jit_oper_t *root = decl_as_oper(decl_f0_f1);
   (root->eval_fn)(root, env);
 
-  //QQQ
+  // QQQ
   if (env->failed) 
-    fprintf(stderr, "%s %d: Evaluation failed\n", __FUNCTION__, __LINE__);
+    fprintf(stderr, "%s %s %d: Evaluation failed\n", __FILE__, __FUNCTION__, __LINE__);
   else
     fprintf(stdout, ":: "); noun_print(stdout, env_pop(env), true); fprintf(stdout, "\n");
+
+  (root->delete_fn)(root);
+  env_delete(env);
 }

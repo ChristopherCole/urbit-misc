@@ -1,37 +1,52 @@
 #if !defined(NOCK5K_H)
 #define NOCK5K_H
 
+#ifndef __STDC_FORMAT_MACROS
+/* To pick up PRIu64 and friends: */
+#define __STDC_FORMAT_MACROS
+#endif
+
 #include <inttypes.h>
 #include <gmp.h>
 #include <config.h>
 #include <stdio.h>
 
-#define ASSERT(p, ...) do { if (NOCK_ASSERT && !(p)) fail(__VA_ARGS__); } while(false)
+#define ASSERT(p, ...) do { if (NOCK_ASSERT && !(p)) fail(#p, __VA_ARGS__); } while(false)
+#define ASSERT0(p) do { if (NOCK_ASSERT && !(p)) fail(#p, NULL); } while(false)
 #define CRASH(machine) crash(machine, "Crash: %s: %d\n", __FUNCTION__, __LINE__)
 #define IS_DEBUG (NOCK_LOG >= NOCK_DEBUG)
-#define DEBUG(f, ...) do { if (IS_DEBUG) printf("%s %d:" f, __FUNCTION__, __LINE__, __VA_ARGS__); } while (false)
-#define DEBUG0(s) do { if (NOCK_LOG >= NOCK_DEBUG) printf(s); } while (false)
+#define DEBUG_PREFIX "Debug:"
+#define DEBUG(f, ...) do { if (IS_DEBUG) nock_log(DEBUG_PREFIX " %s %d: " f, __FUNCTION__, __LINE__, __VA_ARGS__); } while (false)
+#define DEBUG0(s) do { if (NOCK_LOG >= NOCK_DEBUG) nock_log(DEBUG_PREFIX " " s); } while (false)
 #define IS_INFO (NOCK_LOG >= NOCK_INFO)
-#define INFO(f, ...) do { if (IS_INFO) printf("%s %d:" f, __FUNCTION__, __LINE__, __VA_ARGS__); } while (false)
-#define INFO0(s) do { if (NOCK_LOG => NOCK_INFO) printf(s); } while (false)
+#define INFO_PREFIX "Info:"
+#define INFO(f, ...) do { if (IS_INFO) nock_log(INFO_PREFIX " %s %d: " f, __FUNCTION__, __LINE__, __VA_ARGS__); } while (false)
+#define INFO0(s) do { if (NOCK_LOG >= NOCK_INFO) nock_log(INFO_PREFIX " " s); } while (false)
+#define IS_ERROR (NOCK_LOG >= NOCK_ERROR)
+#define ERROR_PREFIX "Error:"
+#define ERROR(f, ...) do { if (IS_ERROR) nock_log(ERROR_PREFIX " %s %d: " f, __FUNCTION__, __LINE__, __VA_ARGS__); } while (false)
+#define ERROR0(s) do { if (NOCK_LOG >= NOCK_ERROR) nock_log(ERROR_PREFIX " " s); } while (false)
 
-struct cell;
-
-typedef struct noun { } noun_t;
+/* TODO: more details on noun/atom representation */
 
 static mpz_t SATOM_MAX_MPZ;
 
 #if UINTPTR_MAX == UINT64_MAX
+/* 64 bit pointers */
 typedef uint64_t satom_t;
 #define SATOM_FMT PRIu64
 #define SATOM_MAX UINT64_MAX
 #elif UINTPTR_MAX == UINT32_MAX
+/* 32 bit pointers */
 typedef uint32_t satom_t;
 #define SATOM_FMT PRIu32
 #define SATOM_MAX UINT32_MAX
 #else
-#error unsupported pointer size
+/* PDP-10, is that you? */
+#error Unsupported pointer size (require 32 or 64 bits)
 #endif
+
+typedef struct noun { } noun_t;
 
 typedef struct base { 
 #if INLINE_REFS
@@ -79,6 +94,7 @@ struct fstack;
 
 struct frame;
 
+/* The machine struct represents the execution state of the runtime. */
 typedef struct machine {
   struct fstack *stack;
   struct heap *heap;
@@ -93,7 +109,7 @@ typedef struct machine {
 } machine_t;
 
 #if NO_SATOMS
-extern fat_noun_t _NULL;
+extern fat_noun_t _UNDEFINED;
 extern fat_noun_t _0;
 extern fat_noun_t _1;
 extern fat_noun_t _2;
@@ -106,7 +122,7 @@ extern fat_noun_t _8;
 extern fat_noun_t _9;
 extern fat_noun_t _10;
 #else
-#define _NULL ((fat_noun_t){ .ptr = (noun_t *)0, .flags = 0 })
+#define _UNDEFINED ((fat_noun_t){ .ptr = (noun_t *)0, .flags = 0 })
 #define _0 ((fat_noun_t){ .ptr = (noun_t *)0, .flags = NOUN_SATOM_FLAG })
 #define _1 ((fat_noun_t){ .ptr = (noun_t *)1, .flags = NOUN_SATOM_FLAG })
 #define _2 ((fat_noun_t){ .ptr = (noun_t *)2, .flags = NOUN_SATOM_FLAG })
@@ -120,7 +136,10 @@ extern fat_noun_t _10;
 #define _10 ((fat_noun_t){ .ptr = (noun_t *)10, .flags = NOUN_SATOM_FLAG })
 #endif
 
-/* note: we use pointer tagging to distinguish types */
+/* Note: We use pointer tagging to distinguish types.  Implicitly,
+ * this means that we assume that allocations will give us the low two
+ * bits to play with (aligned on at least 4 byte boundary). We assert
+ * this (TODO). */
 #define NOUN_SATOM_FLAG 1
 #define NOUN_PTR_SATOM_LEFT_FLAG 1
 #define NOUN_PTR_SATOM_RIGHT_FLAG 2
@@ -130,23 +149,27 @@ extern fat_noun_t _10;
 #define NOUN_RAW_PTR(noun_ptr) ((void *)(((satom_t)noun_ptr) & ~(satom_t)NOUN_PTR_FLAGS))
 
 #define NOUN_EQUALS(n1, n2) (n1.ptr == n2.ptr && n1.flags == n2.flags)
-#define IS_NULL(noun) NOUN_EQUALS(noun, _NULL)
+#define IS_UNDEFINED(noun) NOUN_EQUALS(noun, _UNDEFINED)
 #define CELL(left, right) cell_new(heap, left, right)
 
 #if ALLOC_DEBUG
-#define STACK_OWNER ((base_t *)1)
-#define ROOT_OWNER ((base_t *)2)
-#define COND2_OWNER ((base_t *)3)
-#define HEAP_OWNER ((base_t *)4)
+/* Owners from the "root set": */
+#define STACK_OWNER ((base_t *)1) /* For the stack */
+#define ROOT_OWNER ((base_t *)2) /* For interpreter locals */
+#define COND2_OWNER ((base_t *)3) /* Special for the "cond" function */
+#define HEAP_OWNER ((base_t *)4) /* For static variables */
 #define LAST_OWNER HEAP_OWNER
 #endif
 
 extern "C" {
+/* Sets the thread-local variable holding the pointer to the machine. */
 void machine_set(machine_t *m);
 
 void crash(machine_t *machine, const char *format, ...);
 
-void fail(const char *format, ...);
+void fail(const char *predicate, const char *format, ...);
+
+void nock_log(const char *format, ...);
 
 static inline enum noun_type
 noun_get_type(fat_noun_t noun) {
@@ -161,7 +184,7 @@ noun_get_type(fat_noun_t noun) {
 
 static inline satom_t
 noun_as_satom(fat_noun_t noun) {
-  ASSERT(noun_get_type(noun) == satom_type, "noun_get_type(noun) == satom_type\n");
+  ASSERT0(noun_get_type(noun) == satom_type);
   return (satom_t)noun.ptr;
 }
 
@@ -172,19 +195,19 @@ satom_as_noun(satom_t satom) {
 
 static inline batom_t *
 noun_as_batom(fat_noun_t noun) {
-  ASSERT(noun_get_type(noun) == batom_type, "noun_get_type(noun) == batom_type\n");
+  ASSERT0(noun_get_type(noun) == batom_type);
   return (batom_t *)NOUN_RAW_PTR(noun.ptr);
 }
 
 static inline cell_t *
 noun_as_cell(fat_noun_t noun) {
-  ASSERT(noun_get_type(noun) == cell_type, "noun_get_type(noun) == cell_type\n");
+  ASSERT0(noun_get_type(noun) == cell_type);
   return (cell_t *)NOUN_RAW_PTR(noun.ptr);
 }
 
 static inline fat_noun_t
 noun_get_left(fat_noun_t noun) {
-  ASSERT(noun_get_type(noun) == cell_type, "noun_get_type(noun) == cell_type\n");
+  ASSERT0(noun_get_type(noun) == cell_type);
   return (fat_noun_t){ .ptr = ((cell_t *)NOUN_RAW_PTR(noun.ptr))->base.left,
       .flags = NOUN_IS_LEFT_SATOM(noun.ptr) ? NOUN_SATOM_FLAG : 0
       };
@@ -192,7 +215,7 @@ noun_get_left(fat_noun_t noun) {
 
 static inline fat_noun_t
 noun_get_right(fat_noun_t noun) {
-  ASSERT(noun_get_type(noun) == cell_type, "noun_get_type(noun) == cell_type\n");
+  ASSERT0(noun_get_type(noun) == cell_type);
   return (fat_noun_t){ 
     .ptr = ((cell_t *)NOUN_RAW_PTR(noun.ptr))->right,
       .flags = NOUN_IS_RIGHT_SATOM(noun.ptr) ? NOUN_SATOM_FLAG : 0

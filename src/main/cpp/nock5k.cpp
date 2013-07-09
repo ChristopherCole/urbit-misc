@@ -38,8 +38,8 @@ nock_log(const char *format, ...) {
 }
 
 void
-fail(const char *predicate, const char *format, ...) {
-  fprintf(stderr, "Failed predicate: %s\n", predicate);
+fail(const char *predicate, const char *file, const char *function, int line_number, const char *format, ...) {
+  fprintf(stderr, ERROR_PREFIX " Failed predicate: predicate = '%s', file = '%s', function = '%s', line = %d\n", predicate, file, function, line_number);
   if (format != NULL) {
     va_list args;
     va_start(args, format);

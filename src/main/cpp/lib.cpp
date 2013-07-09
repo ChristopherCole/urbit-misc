@@ -119,38 +119,51 @@ env_fail(env_t *env, const char *predicate, const char *failure_message, const c
 
 static jit_address_t
 env_get_value_at_address(env_t *env, jit_address_t address) {
-  fat_noun_t noun = env->local_variable_index_map;
+  ENV_CHECK(address >= 1, "Invalid address", 0);
 
-  if (address == 1) {
-    ASSERT(!NOUN_EQUALS(noun, env->args_placeholder), "!NOUN_EQUALS(noun, env->args_placeholder)\n");// ZZZ: do something
-    ENV_CHECK(noun_get_type(noun) == satom_type, "Unknown failure", 0);
-    satom_t satom = noun_as_satom(noun);
-    ENV_CHECK((satom_t)(jit_address_t)satom == satom, "Unknown failure", 0);
-    return (jit_address_t)satom;
-  }
+  fat_noun_t noun = env->local_variable_index_map;
+  int depth = (sizeof(address) * 8 - __builtin_clz(address) - 1);
+  fat_noun_t ancestors[depth];
+  bool choice[depth];
 
   // Run through the bits from left to right:
-  int msb = (sizeof(address) * 8 - __builtin_clz(address) - 1);
-  satom_t mask = (1 << (msb - 1));
-
-  for (int i = 0; i < msb; ++i) {
-    if (NOUN_EQUALS(noun, env->args_placeholder)) {
+  satom_t mask = (depth >= 1 ? (1 << (depth - 1)) : 0);
+    
+  for (int i = 0; i < depth; ++i) {
+    if (NOUN_EQUALS(noun, env->args_placeholder))
       noun = cell_new(machine->heap, env->args_placeholder, env->args_placeholder);
-      if (i == 0)
-	ASSIGN(env->local_variable_index_map, noun, ROOT_OWNER);
-    }
-    // ZZZ: check if cell else fail
-    noun = (mask & address) ? noun_get_right(noun) : noun_get_left(noun);
+    
+    ancestors[i] = noun;
+    choice[i] = (mask & address);
+
+    // ZZZ: check if cell else fail?
+    noun = choice[i] ? noun_get_right(noun) : noun_get_left(noun);
     mask = (mask >> 1);
   }
   
   if (NOUN_EQUALS(noun, env->args_placeholder)) {
-    //ZZZ: maps arg to locals here and adjust parent cell
+    // We are fetching an undeclared local variable value: i.e. an argument.
+    noun = satom_as_noun(env->next_local_variable_index++);
+    fat_noun_t n = noun;
+
+    int i;
+    for (int i = depth - 1; i >= 0; --i) {
+      if (choice[i])
+	n = noun_set_right(ancestors[i], n, machine->heap);
+      else
+	n = noun_set_left(ancestors[i], n, machine->heap);
+
+      if (NOUN_EQUALS(n, ancestors[i]))
+	break;
+    }
+
+    if (i == -1)
+      ASSIGN(env->local_variable_index_map, n, ROOT_OWNER);
   }
 
-  ENV_CHECK(noun_get_type(noun) == satom_type, "Unknown failure", 0);
+  ENV_CHECK(noun_get_type(noun) == satom_type, "Type mismatch", 0);
   satom_t satom = noun_as_satom(noun);
-  ENV_CHECK((satom_t)(jit_address_t)satom == satom, "Unknown failure", 0);
+  ENV_CHECK((satom_t)(jit_address_t)satom == satom, "Invalid address", 0);
   return (jit_address_t)satom;
 }
 
@@ -158,7 +171,7 @@ env_t *env_new() {
   env_t *env = ALLOC(env_t);
 
   // Use an "impossible" value as the placeholder:
-  env->args_placeholder = batom_new_ui(machine->heap, JIT_ADDRESS_MAX + 1);
+  env->args_placeholder = batom_new_ui(machine->heap, JIT_ADDRESS_MAX + 1UL);
   SHARE(env->args_placeholder, ROOT_OWNER);
   env->local_variable_index_map = env->args_placeholder;
 
@@ -207,6 +220,7 @@ static void env_set_local(env_t *env, jit_address_t index, fat_noun_t new_local,
     ENV_CHECK_VOID(!IS_UNDEFINED(old_local), "Unknown failure");
     UNSHARE(old_local, STACK_OWNER);
   }
+
   env->next_locals[index] = new_local;
 }
 
@@ -615,7 +629,7 @@ void compile_fib() {
 
   // QQQ
   if (env->failed) 
-    fprintf(stderr, "%s %s %d: Evaluation failed\n", __FILE__, __FUNCTION__, __LINE__);
+    ERROR0("Evaluation failed\n");
   else
     fprintf(stdout, ":: "); noun_print(stdout, env_pop(env), true); fprintf(stdout, "\n");
 

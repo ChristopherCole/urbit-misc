@@ -1541,8 +1541,8 @@ static void nock5k_run(int n_inputs, infile_t *inputs, bool trace_flag, bool int
     machine_set(&machine);
 
     if (true) { //QQQ
-      // void jit_fib(fat_noun_t args); jit_fib(satom_as_noun(200));
-      void jit_dec(fat_noun_t args); jit_dec(satom_as_noun(400000));
+      void jit_fib(fat_noun_t args); jit_fib(satom_as_noun(200));
+      // void jit_dec(fat_noun_t args); jit_dec(satom_as_noun(400000));
     } else {
     bool eof = false;
     do {

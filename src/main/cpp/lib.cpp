@@ -194,12 +194,11 @@ env_allocate_address(env_t *env, jit_address_t address) {
 
     fat_noun_t n = noun;
     int i;
-    for (int i = depth - 1; i >= 0; --i) {
-      if (choice[i]) {
+    for (i = depth - 1; i >= 0; --i) {
+      if (choice[i])
 	n = cell_set_right(ancestors[i], n, machine->heap);
-      } else {
+      else
 	n = cell_set_left(ancestors[i], n, machine->heap);
-      }
 
       if (NOUN_EQUALS(n, ancestors[i]))
 	break;

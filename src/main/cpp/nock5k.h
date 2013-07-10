@@ -1,3 +1,7 @@
+/*
+ * Copyright 2013 Christopher Cole
+ */
+
 #if !defined(NOCK5K_H)
 #define NOCK5K_H
 

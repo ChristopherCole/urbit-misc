@@ -1,3 +1,7 @@
+#
+# Copyright 2013 Christopher Cole
+#
+
 # /opt/local/libexec/llvm-3.3/bin
 
 LLVM_CC_FLAGS = `llvm-config --cflags`

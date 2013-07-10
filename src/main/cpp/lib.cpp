@@ -1,3 +1,7 @@
+/*
+ * Copyright 2013 Christopher Cole
+ */
+
 #include <stdlib.h>
 #include <gmp.h>
 
@@ -97,6 +101,7 @@ typedef struct {
   fat_noun_t args_placeholder;
   fat_noun_t local_variable_index_map;
   jit_address_t next_local_variable_index;
+  // Failure information:
   bool failed;
   const char *predicate;
   const char *failure_message;
@@ -116,6 +121,8 @@ env_fail(env_t *env, const char *predicate, const char *failure_message, const c
 
   nock_log(ERROR_PREFIX " Failure to compile: predicate = '%s', message = '%s', file = '%s', function = '%s', line = %d\n", predicate, failure_message, file, function, line_number);
 }
+
+//ZZZ: do the args allocation in a separate pass
 
 static jit_address_t
 env_get_value_at_address(env_t *env, jit_address_t address) {
@@ -143,6 +150,8 @@ env_get_value_at_address(env_t *env, jit_address_t address) {
   
   if (NOUN_EQUALS(noun, env->args_placeholder)) {
     // We are fetching an undeclared local variable value: i.e. an argument.
+    // Allocate an index and initialize the local variable.
+
     noun = satom_as_noun(env->next_local_variable_index++);
     fat_noun_t n = noun;
 
@@ -234,6 +243,9 @@ static fat_noun_t env_get_local(env_t *env, jit_address_t index) {
 typedef void (*eval_fn_t)(struct jit_oper *oper, env_t *env);
 typedef void (*delete_fn_t)(struct jit_oper *oper);
 
+#define EVAL(oper) ((oper)->eval_fn)(oper, env)
+#define DELETE(oper) ((oper)->delete_fn)(oper)
+
 typedef struct jit_oper {
   struct jit_oper *outer;
   eval_fn_t eval_fn;
@@ -278,13 +290,13 @@ void decl_eval(jit_oper_t *oper, env_t *env) {
 
   ASSIGN(env->local_variable_index_map, new_local_variable_index_map, ROOT_OWNER);
 
-  (decl->inner->eval_fn)(decl->inner, env);
+  EVAL(decl->inner);
 }
 
 void decl_delete(jit_oper_t *oper) {
   jit_decl_t *decl = oper_as_decl(oper);
   UNSHARE(decl->local_variable_initial_values, ROOT_OWNER);
-  (decl->inner->delete_fn)(decl->inner);
+  DELETE(decl->inner);
   free(decl);
 }
 
@@ -326,11 +338,8 @@ void binop_eval(jit_oper_t *oper, env_t *env) {
 
   jit_binop_t *binop = oper_as_binop(oper);
 
-  jit_oper_t *left = expr_as_oper(binop->left);
-  (left->eval_fn)(left, env);
-
-  jit_oper_t *right = expr_as_oper(binop->right);
-  (right->eval_fn)(right, env);
+  EVAL(expr_as_oper(binop->left));
+  EVAL(expr_as_oper(binop->right));
 
   fat_noun_t n1 = env_pop(env);
   fat_noun_t n2 = env_pop(env);
@@ -348,8 +357,8 @@ void binop_eval(jit_oper_t *oper, env_t *env) {
 void binop_delete(jit_oper_t *oper) {
   jit_binop_t *binop = oper_as_binop(oper);
 
-  (expr_as_oper(binop->left)->delete_fn)(expr_as_oper(binop->left));
-  (expr_as_oper(binop->right)->delete_fn)(expr_as_oper(binop->right));
+  DELETE(expr_as_oper(binop->left));
+  DELETE(expr_as_oper(binop->right));
 
   free(binop);
 }
@@ -393,8 +402,8 @@ void inc_eval(jit_oper_t *oper, env_t *env) {
 
 void inc_delete(jit_oper_t *oper) {
   jit_inc_t *inc = oper_as_inc(oper);
-
-  (expr_as_oper(inc->subexpr)->delete_fn)(expr_as_oper(inc->subexpr));
+  
+  DELETE(expr_as_oper(inc->subexpr));
 
   free(inc);
 }
@@ -459,7 +468,7 @@ void store_eval(jit_oper_t *oper, env_t *env) {
 
   jit_store_t *store = (jit_store_t *)oper;
   jit_oper_t *subexpr = expr_as_oper(store->subexpr);
-  (subexpr->eval_fn)(subexpr, env);
+  EVAL(subexpr);
 
   env_set_local(env, env_get_value_at_address(env, oper_as_load(oper)->address), env_pop(env), /* decl */ false);
 }
@@ -509,18 +518,18 @@ void loop_eval(jit_oper_t *oper, env_t *env) {
   jit_loop_t *loop = oper_as_loop(oper);
   while (true) {
     jit_oper_t *test = expr_as_oper(loop->test);
-    (test->eval_fn)(test, env);
+    EVAL(test);
 
     fat_noun_t result = env_pop(env);
     if (eq(result, _YES)) {
       jit_oper_t *result = expr_as_oper(loop->result);
-      (result->eval_fn)(result, env);
+      EVAL(result);
       return;
     } else {
       jit_store_list_t *store_list = loop->first_store;
       while (store_list != NULL) {
 	jit_oper_t *store = store_as_oper(store_list->store);
-	(store->eval_fn)(store, env);
+	EVAL(store);
 	store_list = store_list->next;
       }
       // Copy the locals for the next iteration:
@@ -534,13 +543,13 @@ void loop_delete(jit_oper_t *oper) {
   jit_oper_t *test = expr_as_oper(loop->test);
   jit_oper_t *result = expr_as_oper(loop->result);
   
-  (test->delete_fn)(test);
-  (result->delete_fn)(result);
+  DELETE(test);
+  DELETE(result);
 
   jit_store_list_t *store_list = loop->first_store;
   while (store_list != NULL) {
     jit_oper_t *store = store_as_oper(store_list->store);
-    (store->delete_fn)(store);
+    DELETE(store);
     jit_store_list_t *next = store_list->next;
     free(store_list);
     store_list = next;
@@ -625,7 +634,7 @@ void compile_fib() {
   env_t *env = env_new();
 
   jit_oper_t *root = decl_as_oper(decl_f0_f1);
-  (root->eval_fn)(root, env);
+  EVAL(root);
 
   // QQQ
   if (env->failed) 
@@ -633,6 +642,6 @@ void compile_fib() {
   else
     fprintf(stdout, ":: "); noun_print(stdout, env_pop(env), true); fprintf(stdout, "\n");
 
-  (root->delete_fn)(root);
+  DELETE(root);
   env_delete(env);
 }

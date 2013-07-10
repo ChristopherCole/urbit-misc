@@ -1,3 +1,7 @@
+/*
+ * Copyright 2013 Christopher Cole
+ */
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>

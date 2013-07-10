@@ -1541,7 +1541,7 @@ static void nock5k_run(int n_inputs, infile_t *inputs, bool trace_flag, bool int
     machine_set(&machine);
 
     if (true) { //QQQ
-      void jit_fib(fat_noun_t args); jit_fib(satom_as_noun(93)); //ZZZ: 93 fails
+      void jit_fib(fat_noun_t args); jit_fib(satom_as_noun(200));
     } else {
     bool eof = false;
     do {

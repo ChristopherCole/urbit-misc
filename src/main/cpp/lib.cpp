@@ -271,22 +271,23 @@ void env_delete(env_t *env) {
   free(env);
 }
 
-void env_push(env_t *env, fat_noun_t n) {
+void env_push(env_t *env, fat_noun_t value) {
   if (env->failed) return;
 
   ENV_CHECK_VOID(env->stack.size() < JIT_STACK_MAX, "Stack overflow");
-  SHARE(n, STACK_OWNER);
-  env->stack.push_back(n);
+  SHARE(value, STACK_OWNER);
+  env->stack.push_back(value);
 }
 
+/* Callers must unshare the value. */
 fat_noun_t env_pop(env_t *env) {
   if (env->failed) return _UNDEFINED;
 
   ENV_CHECK(env->stack.size() > 0, "Stack underflow", _UNDEFINED);
-  fat_noun_t result = env->stack.back();
+  fat_noun_t value = env->stack.back();
   env->stack.pop_back();
-  UNSHARE(result, STACK_OWNER);
-  return result;
+
+  return value;
 }
 
 static fat_noun_t env_get_local(env_t *env, jit_index_t index) {
@@ -465,16 +466,19 @@ void binop_eval(jit_oper_t *oper, env_t *env) {
   fat_noun_t n1 = env_pop(env);
   fat_noun_t n2 = env_pop(env);
 
-  if (env->failed) return;
-
-  switch (binop->type) {
-  case binop_eq_type:
-    env_push(env, (eq(n1, n2) ? _YES : _NO));
-    break;
-  case binop_add_type:
-    env_push(env, add(n1, n2));
-    break;
+  if (!env->failed) {
+    switch (binop->type) {
+    case binop_eq_type:
+      env_push(env, (eq(n1, n2) ? _YES : _NO));
+      break;
+    case binop_add_type:
+      env_push(env, add(n1, n2));
+      break;
+    }
   }
+
+  UNSHARE(n1, STACK_OWNER);
+  UNSHARE(n2, STACK_OWNER);
 }
 
 void binop_delete(jit_oper_t *oper) {
@@ -523,7 +527,9 @@ void inc_eval(jit_oper_t *oper, env_t *env) {
 
   EVAL(expr_as_oper(oper_as_inc(oper)->subexpr));
   
-  env_push(env, inc(env_pop(env)));
+  fat_noun_t popped;
+  env_push(env, inc(popped = env_pop(env)));
+  UNSHARE(popped, STACK_OWNER);
 }
 
 void inc_prep(jit_oper_t *oper, env_t *env) {
@@ -619,7 +625,9 @@ void store_eval(jit_oper_t *oper, env_t *env) {
   jit_store_t *store = (jit_store_t *)oper;
   EVAL(expr_as_oper(store->subexpr));
 
-  env_set_local(env, env_get_index_of_address(env, oper_as_load(oper)->address), env_pop(env));
+  fat_noun_t popped;
+  env_set_local(env, env_get_index_of_address(env, oper_as_load(oper)->address), popped = env_pop(env));
+  UNSHARE(popped, STACK_OWNER);
 }
 
 void store_delete(jit_oper_t *oper) {
@@ -687,10 +695,12 @@ void loop_eval(jit_oper_t *oper, env_t *env) {
     jit_oper_t *test = expr_as_oper(loop->test);
     EVAL(test);
 
-    fat_noun_t result = env_pop(env);
     if (env->failed) return;
+    fat_noun_t popped;
+    bool test_result_bool = eq(popped = env_pop(env), _YES);
+    UNSHARE(popped, STACK_OWNER);
 
-    if (eq(result, _YES)) {
+    if (test_result_bool) {
       jit_oper_t *result = expr_as_oper(loop->result);
       EVAL(result);
       return;
@@ -844,7 +854,9 @@ void jit_fib(fat_noun_t args) {
   if (env->failed) 
     ERROR0("Evaluation failed\n");
   else {
-    printf("fib("); noun_print(stdout, args, true); printf(")="); noun_print(stdout, env_pop(env), true); printf("\n");
+    fat_noun_t popped;
+    printf("fib("); noun_print(stdout, args, true); printf(")="); noun_print(stdout, popped = env_pop(env), true); printf("\n");
+    UNSHARE(popped, STACK_OWNER);
   }
 
   DELETE(root);

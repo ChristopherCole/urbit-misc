@@ -90,17 +90,25 @@ fib(fat_noun_t n) {
 #define ASSIGN(l, r, o) do { fat_noun_t old = l; l = SHARE(r, o) ; UNSHARE(old, o); } while (false)
 
 typedef uint32_t jit_address_t;
+#define JIT_ADDRESS_FMT PRIu32
 #define JIT_ADDRESS_MAX UINT32_MAX
+
+typedef uint32_t jit_index_t;
+#define JIT_INDEX_FMT PRIu32
+#define JIT_INDEX_MAX UINT32_MAX
+
+#define JIT_STACK_MAX UINT16_MAX
 
 typedef struct {
   // REVISIT: replace STL uses with small C classes?
   std::vector<fat_noun_t> locals;
   std::vector<fat_noun_t> next_locals;
   std::vector<fat_noun_t> stack;
-  fat_noun_t args; // ZZZ: should start as "args_placeholder" and get updated as "args_placeholder" is "pushed down" -- defines the "shape" of the input (and # of args)
+  fat_noun_t args_root;
   fat_noun_t args_placeholder;
+  fat_noun_t loop_body_placeholder;
   fat_noun_t local_variable_index_map;
-  jit_address_t next_local_variable_index;
+  jit_index_t next_local_variable_index;
   // Failure information:
   bool failed;
   const char *predicate;
@@ -122,11 +130,21 @@ env_fail(env_t *env, const char *predicate, const char *failure_message, const c
   nock_log(ERROR_PREFIX " Failure to compile: predicate = '%s', message = '%s', file = '%s', function = '%s', line = %d\n", predicate, failure_message, file, function, line_number);
 }
 
-//ZZZ: do the args allocation in a separate pass
+static jit_index_t env_allocate_local(env_t *env) {
+  if (env->failed) return 0;
 
-static jit_address_t
-env_get_value_at_address(env_t *env, jit_address_t address) {
-  ENV_CHECK(address >= 1, "Invalid address", 0);
+  ENV_CHECK(env->next_local_variable_index < JIT_INDEX_MAX, "Too many local variable declarations", 0);
+  int index = env->next_local_variable_index++;
+
+  env->locals.resize(index + 1, _UNDEFINED);
+  env->next_locals.resize(index + 1, _UNDEFINED);
+
+  return index;
+}
+
+static void
+env_allocate_address(env_t *env, jit_address_t address) {
+  ENV_CHECK_VOID(address >= 1, "Invalid address");
 
   fat_noun_t noun = env->local_variable_index_map;
   int depth = (sizeof(address) * 8 - __builtin_clz(address) - 1);
@@ -137,8 +155,16 @@ env_get_value_at_address(env_t *env, jit_address_t address) {
   satom_t mask = (depth >= 1 ? (1 << (depth - 1)) : 0);
     
   for (int i = 0; i < depth; ++i) {
-    if (NOUN_EQUALS(noun, env->args_placeholder))
+    ENV_CHECK_VOID(!NOUN_EQUALS(noun, env->loop_body_placeholder), "Cannot refer to the loop body");
+
+    if (NOUN_EQUALS(noun, env->args_placeholder)) {
       noun = cell_new(machine->heap, env->args_placeholder, env->args_placeholder);
+
+      if (NOUN_IS_UNDEFINED(env->args_root)) {
+	env->args_root = noun;
+	SHARE(env->args_root, ENV_OWNER);
+      }
+    }
     
     ancestors[i] = noun;
     choice[i] = (mask & address);
@@ -148,61 +174,114 @@ env_get_value_at_address(env_t *env, jit_address_t address) {
     mask = (mask >> 1);
   }
   
+  ENV_CHECK_VOID(!NOUN_EQUALS(noun, env->loop_body_placeholder), "Cannot refer to the loop body");
+
   if (NOUN_EQUALS(noun, env->args_placeholder)) {
+    // This is an undeclared reference, so it must be an argument.
     // We are fetching an undeclared local variable value: i.e. an argument.
     // Allocate an index and initialize the local variable.
 
-    noun = satom_as_noun(env->next_local_variable_index++);
-    fat_noun_t n = noun;
+    // Allocate a local variable slot for an argument:
+    noun = satom_as_noun(env_allocate_local(env));
 
+    if (NOUN_IS_UNDEFINED(env->args_root)) {
+      env->args_root = noun;
+      SHARE(env->args_root, ENV_OWNER);
+    }
+
+    fat_noun_t n = noun;
     int i;
     for (int i = depth - 1; i >= 0; --i) {
-      if (choice[i])
-	n = noun_set_right(ancestors[i], n, machine->heap);
-      else
-	n = noun_set_left(ancestors[i], n, machine->heap);
+      if (choice[i]) {
+	n = cell_set_right(ancestors[i], n, machine->heap);
+      } else {
+	n = cell_set_left(ancestors[i], n, machine->heap);
+      }
 
       if (NOUN_EQUALS(n, ancestors[i]))
 	break;
     }
 
     if (i == -1)
-      ASSIGN(env->local_variable_index_map, n, ROOT_OWNER);
+      ASSIGN(env->local_variable_index_map, n, ENV_OWNER);
+  }
+
+  ENV_CHECK_VOID(noun_get_type(noun) == satom_type, "Type mismatch");
+  ENV_CHECK_VOID(noun_as_satom(noun) <= JIT_INDEX_MAX, "Invalid index");
+}
+
+static jit_index_t
+env_get_index_of_address(env_t *env, jit_address_t address) {
+  ENV_CHECK(address >= 1, "Invalid address", 0);
+
+  fat_noun_t noun = env->local_variable_index_map;
+  ENV_CHECK(!NOUN_EQUALS(noun, env->loop_body_placeholder), "Cannot refer to the loop body", 0);
+  ENV_CHECK(!NOUN_EQUALS(noun, env->args_placeholder), "Undefined value", 0);
+  int depth = (sizeof(address) * 8 - __builtin_clz(address) - 1);
+
+  // Run through the bits from left to right:
+  satom_t mask = (depth >= 1 ? (1 << (depth - 1)) : 0);
+    
+  for (int i = 0; i < depth; ++i) {    
+    noun = (mask & address) ? noun_get_right(noun) : noun_get_left(noun);
+    ENV_CHECK(!NOUN_EQUALS(noun, env->loop_body_placeholder), "Cannot refer to the loop body", 0);
+    ENV_CHECK(!NOUN_EQUALS(noun, env->args_placeholder), "Undefined value", 0);
+    mask = (mask >> 1);
   }
 
   ENV_CHECK(noun_get_type(noun) == satom_type, "Type mismatch", 0);
-  satom_t satom = noun_as_satom(noun);
-  ENV_CHECK((satom_t)(jit_address_t)satom == satom, "Invalid address", 0);
-  return (jit_address_t)satom;
+  satom_t index_satom = noun_as_satom(noun);
+  ENV_CHECK(index_satom <= JIT_INDEX_MAX, "Invalid address", 0);
+  return (jit_index_t)index_satom;
 }
 
 env_t *env_new() {
   env_t *env = ALLOC(env_t);
 
   // Use an "impossible" value as the placeholder:
-  env->args_placeholder = batom_new_ui(machine->heap, JIT_ADDRESS_MAX + 1UL);
-  SHARE(env->args_placeholder, ROOT_OWNER);
+  env->args_placeholder = batom_new_ui(machine->heap, JIT_INDEX_MAX + 1UL);
+  SHARE(env->args_placeholder, ENV_OWNER);
+  env->loop_body_placeholder = batom_new_ui(machine->heap, JIT_INDEX_MAX + 2UL);
+  SHARE(env->loop_body_placeholder, ENV_OWNER);
   env->local_variable_index_map = env->args_placeholder;
+  SHARE(env->local_variable_index_map, ENV_OWNER);
 
   return env;
 }
 
 void env_delete(env_t *env) {
-  // ZZZ: unshare locals? args, local_variable_index_map, args_placeholder?
   ENV_CHECK_VOID(env->stack.size() == 0, "Stack should be empty");
+  for(std::vector<fat_noun_t>::iterator it = env->locals.begin(); it != env->locals.end(); ++it) {
+    if (NOUN_IS_UNDEFINED(*it))
+      ENV_CHECK_VOID(!NOUN_IS_UNDEFINED(*it), "Undefined local variable");
+    else
+      UNSHARE(*it, LOCALS_OWNER);
+  }
+  env->locals.~vector();
+  for(std::vector<fat_noun_t>::iterator it = env->next_locals.begin(); it != env->next_locals.end(); ++it) {
+    ENV_CHECK_VOID(NOUN_IS_UNDEFINED(*it), "Leaked local variable");
+  }
+  env->next_locals.~vector();
   env->stack.~vector();
+  UNSHARE(env->args_placeholder, ENV_OWNER);
+  UNSHARE(env->loop_body_placeholder, ENV_OWNER);
+  UNSHARE(env->local_variable_index_map, ENV_OWNER);
+  if (!NOUN_IS_UNDEFINED(env->args_root))
+    UNSHARE(env->args_root, ENV_OWNER);
   free(env);
 }
 
 void env_push(env_t *env, fat_noun_t n) {
   if (env->failed) return;
-  ENV_CHECK_VOID(env->stack.size() < JIT_ADDRESS_MAX, "Stack overflow");
+
+  ENV_CHECK_VOID(env->stack.size() < JIT_STACK_MAX, "Stack overflow");
   SHARE(n, STACK_OWNER);
   env->stack.push_back(n);
 }
 
 fat_noun_t env_pop(env_t *env) {
   if (env->failed) return _UNDEFINED;
+
   ENV_CHECK(env->stack.size() > 0, "Stack underflow", _UNDEFINED);
   fat_noun_t result = env->stack.back();
   env->stack.pop_back();
@@ -210,44 +289,51 @@ fat_noun_t env_pop(env_t *env) {
   return result;
 }
 
-static void env_set_local(env_t *env, jit_address_t index, fat_noun_t new_local, bool decl) {
-  if (env->failed) return;
-  if (decl) {
-    if (index >= env->locals.size()) {
-      env->locals.resize(index + 1, _UNDEFINED);
-      env->next_locals.resize(index + 1, _UNDEFINED);
-    }
-  } else {
-    ENV_CHECK_VOID(index < env->locals.size(), "Unknown failure");
-  }
-
-  SHARE(new_local, STACK_OWNER);
-  fat_noun_t old_local = env->next_locals[index];
-  if (decl) {
-    ENV_CHECK_VOID(IS_UNDEFINED(old_local), "Unknown failure");
-  } else {
-    ENV_CHECK_VOID(!IS_UNDEFINED(old_local), "Unknown failure");
-    UNSHARE(old_local, STACK_OWNER);
-  }
-
-  env->next_locals[index] = new_local;
-}
-
-static fat_noun_t env_get_local(env_t *env, jit_address_t index) {
+static fat_noun_t env_get_local(env_t *env, jit_index_t index) {
   if (env->failed) return _UNDEFINED;
-  fat_noun_t result = env->locals[index];
-  ENV_CHECK(!IS_UNDEFINED(result), "Unknown failure", _UNDEFINED);
-  return result;
+
+  fat_noun_t value = env->locals[index];
+  ENV_CHECK(!NOUN_IS_UNDEFINED(value), "Undefined value", _UNDEFINED);
+
+  return value;
 }
 
-typedef void (*eval_fn_t)(struct jit_oper *oper, env_t *env);
-typedef void (*delete_fn_t)(struct jit_oper *oper);
+static void env_set_local(env_t *env, jit_index_t index, fat_noun_t new_value) {
+  if (env->failed) return;
 
+  ENV_CHECK_VOID(index < env->next_locals.size(), "Invalid index");
+  ENV_CHECK_VOID(NOUN_IS_UNDEFINED(env->next_locals[index]), "Overwritten value");
+  ENV_CHECK_VOID(!NOUN_IS_UNDEFINED(new_value), "Undefined value");
+
+  SHARE(new_value, LOCALS_OWNER);
+  env->next_locals[index] = new_value;
+}
+
+static void env_initialize_local(env_t *env, jit_index_t index, fat_noun_t new_value) {
+  if (env->failed) return;
+
+  ENV_CHECK_VOID(index < env->locals.size(), "Invalid index");
+  ENV_CHECK_VOID(NOUN_IS_UNDEFINED(env->locals[index]), "Overwritten value");
+  ENV_CHECK_VOID(!NOUN_IS_UNDEFINED(new_value), "Undefined value");
+
+  SHARE(new_value, LOCALS_OWNER);
+  env->locals[index] = new_value;
+}
+
+static void env_declare_loop(env_t *env) {
+  ASSIGN(env->local_variable_index_map, cell_new(machine->heap, env->loop_body_placeholder, env->local_variable_index_map), ENV_OWNER);
+}
+
+typedef void (*prep_fn_t)(struct jit_oper *oper, env_t *env);
+#define PREP(oper) ((oper)->prep_fn)(oper, env)
+typedef void (*eval_fn_t)(struct jit_oper *oper, env_t *env);
 #define EVAL(oper) ((oper)->eval_fn)(oper, env)
+typedef void (*delete_fn_t)(struct jit_oper *oper);
 #define DELETE(oper) ((oper)->delete_fn)(oper)
 
 typedef struct jit_oper {
   struct jit_oper *outer;
+  prep_fn_t prep_fn;
   eval_fn_t eval_fn;
   delete_fn_t delete_fn;
   // TODO: source information: file, line, column
@@ -263,20 +349,45 @@ typedef struct jit_decl {
   jit_oper_t base;
   jit_oper_t *inner;
   fat_noun_t local_variable_initial_values;
+  fat_noun_t local_variable_index_map;
 } jit_decl_t;
 
 #define decl_as_oper(decl) (&(decl)->base)
 #define oper_as_decl(oper) ((jit_decl_t *)(oper))
 
-static fat_noun_t decl_eval_impl(env_t *env, fat_noun_t local_variable_initial_values) {
+static fat_noun_t decl_prep_impl(env_t *env, fat_noun_t local_variable_initial_values) {
   if (noun_get_type(local_variable_initial_values) == cell_type) {
-    fat_noun_t left = decl_eval_impl(env, noun_get_left(local_variable_initial_values));
-    fat_noun_t right = decl_eval_impl(env, noun_get_right(local_variable_initial_values));
+    fat_noun_t left = decl_prep_impl(env, noun_get_left(local_variable_initial_values));
+    fat_noun_t right = decl_prep_impl(env, noun_get_right(local_variable_initial_values));
     return cell_new(machine->heap, left, right);
   } else {
-    env_set_local(env, env->next_local_variable_index, local_variable_initial_values, /* decl */ true);
-    ENV_CHECK(env->next_local_variable_index < JIT_ADDRESS_MAX, "Too many local variable declarations", _UNDEFINED);
-    return satom_as_noun(env->next_local_variable_index++);
+    // Allocate a local variable slot for a declared variable:
+    return satom_as_noun(env_allocate_local(env));
+  }
+}
+
+void decl_prep(jit_oper_t *oper, env_t *env) {
+  if (env->failed) return;
+
+  jit_decl_t *decl = oper_as_decl(oper);
+
+  decl->local_variable_index_map = decl_prep_impl(env, decl->local_variable_initial_values);
+  SHARE(decl->local_variable_index_map, AST_OWNER);
+
+  fat_noun_t new_local_variable_index_map = cell_new(machine->heap, decl->local_variable_index_map, env->local_variable_index_map);
+  ASSIGN(env->local_variable_index_map, new_local_variable_index_map, ENV_OWNER);
+
+  PREP(decl->inner);
+}
+
+static void decl_eval_impl(env_t *env, fat_noun_t local_variable_initial_values, fat_noun_t local_variable_index_map) {
+  if (noun_get_type(local_variable_initial_values) == cell_type) {
+    decl_eval_impl(env, noun_get_left(local_variable_initial_values), noun_get_left(local_variable_index_map));
+    decl_eval_impl(env, noun_get_right(local_variable_initial_values), noun_get_right(local_variable_index_map));
+  } else {
+    satom_t index = noun_as_satom(local_variable_index_map);
+    ENV_CHECK_VOID(index <= JIT_INDEX_MAX, "Invalid index");
+    env_initialize_local(env, (jit_index_t)index, local_variable_initial_values);
   }
 }
 
@@ -285,17 +396,16 @@ void decl_eval(jit_oper_t *oper, env_t *env) {
 
   jit_decl_t *decl = oper_as_decl(oper);
 
-  fat_noun_t added_local_variable_index_map = decl_eval_impl(env, decl->local_variable_initial_values);
-  fat_noun_t new_local_variable_index_map = cell_new(machine->heap, added_local_variable_index_map, env->local_variable_index_map);
-
-  ASSIGN(env->local_variable_index_map, new_local_variable_index_map, ROOT_OWNER);
+  decl_eval_impl(env, decl->local_variable_initial_values, decl->local_variable_index_map);
 
   EVAL(decl->inner);
 }
 
 void decl_delete(jit_oper_t *oper) {
   jit_decl_t *decl = oper_as_decl(oper);
-  UNSHARE(decl->local_variable_initial_values, ROOT_OWNER);
+  if (!NOUN_IS_UNDEFINED(decl->local_variable_index_map))
+    UNSHARE(decl->local_variable_index_map, AST_OWNER);
+  UNSHARE(decl->local_variable_initial_values, AST_OWNER);
   DELETE(decl->inner);
   free(decl);
 }
@@ -303,8 +413,10 @@ void decl_delete(jit_oper_t *oper) {
 jit_decl_t *decl_new(fat_noun_t local_variable_initial_values) {
   jit_decl_t *decl = ALLOC(jit_decl_t);
 
-  SHARE(local_variable_initial_values, ROOT_OWNER);
+  SHARE(local_variable_initial_values, AST_OWNER);
   decl->local_variable_initial_values = local_variable_initial_values;
+  decl->local_variable_index_map = _UNDEFINED;
+  decl_as_oper(decl)->prep_fn = decl_prep;
   decl_as_oper(decl)->eval_fn = decl_eval;
   decl_as_oper(decl)->delete_fn = decl_delete;
 
@@ -333,6 +445,15 @@ typedef struct jit_binop {
 #define binop_as_oper(binop) expr_as_oper(binop_as_expr(binop))
 #define oper_as_binop(oper) ((jit_binop_t *)(oper))
 
+void binop_prep(jit_oper_t *oper, env_t *env) {
+  if (env->failed) return;
+
+  jit_binop_t *binop = oper_as_binop(oper);
+
+  PREP(expr_as_oper(binop->left));
+  PREP(expr_as_oper(binop->right));
+}
+
 void binop_eval(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
 
@@ -343,6 +464,8 @@ void binop_eval(jit_oper_t *oper, env_t *env) {
 
   fat_noun_t n1 = env_pop(env);
   fat_noun_t n2 = env_pop(env);
+
+  if (env->failed) return;
 
   switch (binop->type) {
   case binop_eq_type:
@@ -367,6 +490,7 @@ jit_binop_t *binop_new(enum binop_type type) {
   jit_binop_t *binop = ALLOC(jit_binop_t);
 
   binop->type = type;
+  binop_as_oper(binop)->prep_fn = binop_prep;
   binop_as_oper(binop)->eval_fn = binop_eval;
   binop_as_oper(binop)->delete_fn = binop_delete;
 
@@ -397,7 +521,15 @@ typedef struct jit_inc {
 void inc_eval(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
 
+  EVAL(expr_as_oper(oper_as_inc(oper)->subexpr));
+  
   env_push(env, inc(env_pop(env)));
+}
+
+void inc_prep(jit_oper_t *oper, env_t *env) {
+  if (env->failed) return;
+
+  PREP(expr_as_oper(oper_as_inc(oper)->subexpr));
 }
 
 void inc_delete(jit_oper_t *oper) {
@@ -411,6 +543,7 @@ void inc_delete(jit_oper_t *oper) {
 jit_inc_t *inc_new() {
   jit_inc_t *inc = ALLOC(jit_inc_t);
 
+  inc_as_oper(inc)->prep_fn = inc_prep;
   inc_as_oper(inc)->eval_fn = inc_eval;
   inc_as_oper(inc)->delete_fn = inc_delete;
 
@@ -432,9 +565,16 @@ typedef struct jit_load {
 #define load_as_oper(load) expr_as_oper(load_as_expr(load))
 #define oper_as_load(oper) ((jit_load_t *)(oper))
 
+void load_prep(jit_oper_t *oper, env_t *env) {
+  if (env->failed) return;
+
+  env_allocate_address(env, oper_as_load(oper)->address);
+}
+
 void load_eval(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
-  env_push(env, env_get_local(env, env_get_value_at_address(env, oper_as_load(oper)->address)));
+
+  env_push(env, env_get_local(env, env_get_index_of_address(env, oper_as_load(oper)->address)));
 }
 
 void load_delete(jit_oper_t *oper) {
@@ -447,6 +587,7 @@ jit_load_t *load_new(jit_address_t address) {
   jit_load_t *load = ALLOC(jit_load_t);
 
   load->address = address;
+  load_as_oper(load)->prep_fn = load_prep;
   load_as_oper(load)->eval_fn = load_eval;
   load_as_oper(load)->delete_fn = load_delete;
 
@@ -463,14 +604,22 @@ typedef struct jit_store {
 #define store_as_oper(store) expr_as_oper(store_as_expr(store))
 #define oper_as_store(oper) ((jit_store_t *)(oper))
 
+void store_prep(jit_oper_t *oper, env_t *env) {
+  if (env->failed) return;
+
+  jit_store_t *store = (jit_store_t *)oper;
+  PREP(expr_as_oper(store->subexpr));
+
+  env_allocate_address(env, oper_as_load(oper)->address);
+}
+
 void store_eval(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
 
   jit_store_t *store = (jit_store_t *)oper;
-  jit_oper_t *subexpr = expr_as_oper(store->subexpr);
-  EVAL(subexpr);
+  EVAL(expr_as_oper(store->subexpr));
 
-  env_set_local(env, env_get_value_at_address(env, oper_as_load(oper)->address), env_pop(env), /* decl */ false);
+  env_set_local(env, env_get_index_of_address(env, oper_as_load(oper)->address), env_pop(env));
 }
 
 void store_delete(jit_oper_t *oper) {
@@ -483,6 +632,7 @@ jit_store_t *store_new(jit_address_t address) {
   jit_store_t *store = ALLOC(jit_store_t);
 
   store->address = address;
+  store_as_oper(store)->prep_fn = store_prep;
   store_as_oper(store)->eval_fn = store_eval;
   store_as_oper(store)->delete_fn = store_delete;
 
@@ -512,6 +662,23 @@ typedef struct jit_loop {
 #define loop_as_oper(loop) expr_as_oper(loop_as_expr(loop))
 #define oper_as_loop(oper) ((jit_loop_t *)(oper))
 
+void loop_prep(jit_oper_t *oper, env_t *env) {
+  if (env->failed) return;
+
+  env_declare_loop(env);
+
+  jit_loop_t *loop = oper_as_loop(oper);
+
+  PREP(expr_as_oper(loop->test));
+  PREP(expr_as_oper(loop->result));
+
+  jit_store_list_t *store_list = loop->first_store;
+  while (store_list != NULL) {
+    PREP(store_as_oper(store_list->store));
+    store_list = store_list->next;
+  }
+}
+
 void loop_eval(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
 
@@ -521,6 +688,8 @@ void loop_eval(jit_oper_t *oper, env_t *env) {
     EVAL(test);
 
     fat_noun_t result = env_pop(env);
+    if (env->failed) return;
+
     if (eq(result, _YES)) {
       jit_oper_t *result = expr_as_oper(loop->result);
       EVAL(result);
@@ -533,7 +702,13 @@ void loop_eval(jit_oper_t *oper, env_t *env) {
 	store_list = store_list->next;
       }
       // Copy the locals for the next iteration:
-      env->locals = env->next_locals;
+      std::vector<fat_noun_t>::iterator lit = env->next_locals.begin();
+      for(std::vector<fat_noun_t>::iterator cit = env->locals.begin(); cit != env->locals.end(); ++cit) {
+	UNSHARE(*cit, LOCALS_OWNER);
+	*cit = *lit;
+	*lit = _UNDEFINED;
+	++lit;
+      }
     }
   }
 }
@@ -561,6 +736,7 @@ void loop_delete(jit_oper_t *oper) {
 jit_loop_t *loop_new() {
   jit_loop_t *loop = ALLOC(jit_loop_t);
 
+  loop_as_oper(loop)->prep_fn = loop_prep;
   loop_as_oper(loop)->eval_fn = loop_eval;
   loop_as_oper(loop)->delete_fn = loop_delete;
 
@@ -593,7 +769,28 @@ void loop_add_store(jit_loop_t *loop, jit_store_t *store) {
   }
 }
 
-void compile_fib() {
+static void env_initialize_args(env_t *env, fat_noun_t args, fat_noun_t args_root) {
+  if (noun_get_type(args) == cell_type) {
+    ENV_CHECK_VOID(noun_get_type(args_root) == cell_type, "Argument type mismatch");
+    env_initialize_args(env, noun_get_left(args), noun_get_left(args_root));
+    env_initialize_args(env, noun_get_right(args), noun_get_right(args_root));
+  } else {
+    ENV_CHECK_VOID(noun_get_type(args_root) == satom_type, "Type mismatch");
+    satom_t index_satom = noun_as_satom(args_root);
+    ENV_CHECK_VOID(index_satom <= JIT_INDEX_MAX, "Invalid index");
+    env_initialize_local(env, (jit_index_t)index_satom, args);
+  }
+}
+
+void env_eval(env_t *env, jit_oper_t *oper, fat_noun_t args) {
+  ENV_CHECK_VOID(NOUN_IS_UNDEFINED(args) == NOUN_IS_UNDEFINED(env->args_root), "Arguments mismatch");
+
+  env_initialize_args(env, args, env->args_root);
+
+  EVAL(oper);
+}
+
+void jit_fib(fat_noun_t args) {
   struct heap *heap = machine->heap;
 
   jit_decl_t *decl_f0_f1 = decl_new(CELL(_0, _1));
@@ -631,16 +828,24 @@ void compile_fib() {
   jit_load_t *add_right = load_new(29);
   /**/ binop_set_right(add, load_as_expr(add_right));
 
+  jit_store_t *store_15 = store_new(15);
+  /**/ loop_add_store(loop, store_15);
+  jit_load_t *load_15 = load_new(15);
+  /**/ store_set_as_expr(store_15, load_as_expr(load_15));
+
   env_t *env = env_new();
 
   jit_oper_t *root = decl_as_oper(decl_f0_f1);
-  EVAL(root);
+  PREP(root);
+
+  env_eval(env, root, args);
 
   // QQQ
   if (env->failed) 
     ERROR0("Evaluation failed\n");
-  else
-    fprintf(stdout, ":: "); noun_print(stdout, env_pop(env), true); fprintf(stdout, "\n");
+  else {
+    printf("fib("); noun_print(stdout, args, true); printf(")="); noun_print(stdout, env_pop(env), true); printf("\n");
+  }
 
   DELETE(root);
   env_delete(env);

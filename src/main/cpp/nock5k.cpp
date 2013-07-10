@@ -540,7 +540,7 @@ noun_unshare(fat_noun_t noun, heap_t *heap, bool toplevel) {
 }
 
 fat_noun_t
-noun_set_left(fat_noun_t noun, fat_noun_t left, heap_t *heap) {
+cell_set_left(fat_noun_t noun, fat_noun_t left, heap_t *heap) {
   ASSERT0(noun_get_type(noun) == cell_type);
   cell_t *cell = noun_as_cell(noun);
   SHARE(left, &(cell->base));
@@ -548,14 +548,14 @@ noun_set_left(fat_noun_t noun, fat_noun_t left, heap_t *heap) {
   cell->base.left = left.ptr;
   return (fat_noun_t){
     .ptr = (noun_t *)
-    ((((satom_t)cell) & ~NOUN_PTR_SATOM_LEFT_FLAG) |
+    ((((satom_t)noun.ptr) & ~NOUN_PTR_SATOM_LEFT_FLAG) |
      ((noun_get_type(left) == satom_type) ? NOUN_PTR_SATOM_LEFT_FLAG : 0)),
     .flags = 0
   };
 }
 
 fat_noun_t
-noun_set_right(fat_noun_t noun, fat_noun_t right, heap_t *heap) {
+cell_set_right(fat_noun_t noun, fat_noun_t right, heap_t *heap) {
   ASSERT0(noun_get_type(noun) == cell_type);
   cell_t *cell = noun_as_cell(noun);
   SHARE(right, &(cell->base));
@@ -563,7 +563,7 @@ noun_set_right(fat_noun_t noun, fat_noun_t right, heap_t *heap) {
   cell->right = right.ptr;
   return (fat_noun_t){
     .ptr = (noun_t *)
-    ((((satom_t)cell) & ~NOUN_PTR_SATOM_RIGHT_FLAG) |
+    ((((satom_t)noun.ptr) & ~NOUN_PTR_SATOM_RIGHT_FLAG) |
      ((noun_get_type(right) == satom_type) ? NOUN_PTR_SATOM_RIGHT_FLAG : 0)),
     .flags = 0
   };
@@ -1540,17 +1540,20 @@ static void nock5k_run(int n_inputs, infile_t *inputs, bool trace_flag, bool int
 
     machine_set(&machine);
 
-    void compile_fib(); compile_fib(); exit(0); // QQQ
-
+    if (true) { //QQQ
+      void jit_fib(fat_noun_t args); jit_fib(satom_as_noun(93)); //ZZZ: 93 fails
+    } else {
     bool eof = false;
     do {
       // TODO: use readline (or editline)
       if (interactive_flag) printf("> ");
       fat_noun_t top = parse(&machine, input, &eof);
-      if (!IS_UNDEFINED(top)) {
+      if (!NOUN_IS_UNDEFINED(top)) {
 	noun_print(stdout, nock5k_run_impl(&machine, nock_op, top), true); printf("\n");
       }
     } while (interactive_flag && !eof);
+    }
+
     free_atoms(machine.heap);
     heap_free_free_list(machine.heap);
 #if NOCK_STATS

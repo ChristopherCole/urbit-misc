@@ -152,8 +152,8 @@ extern fat_noun_t _10;
 #define NOUN_IS_RIGHT_SATOM(noun_ptr) ((((satom_t)noun_ptr) & NOUN_PTR_SATOM_RIGHT_FLAG) == NOUN_PTR_SATOM_RIGHT_FLAG)
 #define NOUN_RAW_PTR(noun_ptr) ((void *)(((satom_t)noun_ptr) & ~(satom_t)NOUN_PTR_FLAGS))
 
-#define NOUN_EQUALS(n1, n2) (n1.ptr == n2.ptr && n1.flags == n2.flags)
-#define IS_UNDEFINED(noun) NOUN_EQUALS(noun, _UNDEFINED)
+#define NOUN_EQUALS(n1, n2) ((n1).ptr == (n2).ptr && (n1).flags == (n2).flags)
+#define NOUN_IS_UNDEFINED(noun) NOUN_EQUALS(noun, _UNDEFINED)
 #define CELL(left, right) cell_new(heap, left, right)
 
 #if ALLOC_DEBUG
@@ -162,7 +162,9 @@ extern fat_noun_t _10;
 #define ROOT_OWNER ((base_t *)2) /* For interpreter locals */
 #define COND2_OWNER ((base_t *)3) /* Special for the "cond" function */
 #define HEAP_OWNER ((base_t *)4) /* For static variables */
-#define LAST_OWNER HEAP_OWNER
+#define ENV_OWNER ((base_t *)5) /* For the environment during compilation */
+#define AST_OWNER ((base_t *)6) /* For the AST during compilation */
+#define LOCALS_OWNER ((base_t *)7) /* For the local variables during abstract interpretation */
 #endif
 
 extern "C" {
@@ -226,9 +228,9 @@ noun_get_right(fat_noun_t noun) {
       };
 }
 
-fat_noun_t noun_set_left(fat_noun_t noun, fat_noun_t left, struct heap *heap);
+fat_noun_t cell_set_left(fat_noun_t noun, fat_noun_t left, struct heap *heap);
 
-fat_noun_t noun_set_right(fat_noun_t noun, fat_noun_t left, struct heap *heap);
+fat_noun_t cell_set_right(fat_noun_t noun, fat_noun_t left, struct heap *heap);
 
 void noun_print(FILE *file, fat_noun_t noun, bool brackets);
 

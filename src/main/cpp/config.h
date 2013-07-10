@@ -6,7 +6,7 @@
 #define PRODUCTION false
 #endif
 #define ALLOC_DEBUG (true && !PRODUCTION)
-#define ALLOC_DEBUG_PRINT (true && ALLOC_DEBUG)
+#define ALLOC_DEBUG_PRINT (false/*QQQ*/ && ALLOC_DEBUG)
 #define SHARED_CELL_LIST_SIZE 0
 #define SHARED_CELL_LIST SHARED_CELL_LIST_SIZE > 0
 #define CELL_FREE_LIST_SIZE (ALLOC_DEBUG ? 0 : 16)

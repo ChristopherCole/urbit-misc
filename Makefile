@@ -18,7 +18,6 @@ endif
 nock5k: build_dir ${SRC}/nock5k.cpp
 	c++ -DPRODUCTION=${PRODUCTION} -DNOCK_LLVM=false -I${SRC} ${OPT} ${SRC}/nock5k.cpp ${SRC}/lib.cpp -lprofiler -lgmp -o build/bin/nock5k
 
-
 nock5k-llvm: build_dir ${SRC}/nock5k.cpp ${SRC}/lib.cpp
 	c++ -DPRODUCTION=${PRODUCTION} -DNOCK_LLVM=true ${LLVM_CC_FLAGS} -I${SRC} ${OPT} ${SRC}/nock5k.cpp ${SRC}/lib.cpp -lprofiler -lgmp ${LLVM_LINK_FLAGS} -o build/bin/nock5k
 

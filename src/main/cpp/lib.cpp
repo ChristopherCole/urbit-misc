@@ -699,10 +699,10 @@ void loop_eval(jit_oper_t *oper, env_t *env) {
 
     if (env->failed) return;
     fat_noun_t popped;
-    bool test_result_bool = eq(popped = env_pop(env), _YES);
+    bool is_eq = eq(popped = env_pop(env), _YES);
     UNSHARE(popped, STACK_OWNER);
 
-    if (test_result_bool) {
+    if (is_eq) {
       jit_oper_t *result = expr_as_oper(loop->result);
       EVAL(result);
       return;

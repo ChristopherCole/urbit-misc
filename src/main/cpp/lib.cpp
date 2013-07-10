@@ -89,14 +89,17 @@ fib(fat_noun_t n) {
 #endif
 #define ASSIGN(l, r, o) do { fat_noun_t old = l; l = SHARE(r, o) ; UNSHARE(old, o); } while (false)
 
+// Addresses a node in a tree: an argument to the slash operator.
 typedef uint32_t jit_address_t;
 #define JIT_ADDRESS_FMT PRIu32
 #define JIT_ADDRESS_MAX UINT32_MAX
 
+// An index into the local variable list.
 typedef uint32_t jit_index_t;
 #define JIT_INDEX_FMT PRIu32
 #define JIT_INDEX_MAX UINT32_MAX
 
+// Shouldn't be too big (uint16 is way overkill).
 #define JIT_STACK_MAX UINT16_MAX
 
 typedef struct {
@@ -556,7 +559,7 @@ jit_inc_t *inc_new() {
   return inc;
 }
 
-void inc_set_as_expr(jit_inc_t *inc, jit_expr_t *expr) {
+void inc_set_subexpr(jit_inc_t *inc, jit_expr_t *expr) {
   ASSERT(inc->subexpr == NULL, "inc->subexpr == NULL\n");
   inc->subexpr = expr;
   expr_as_oper(expr)->outer = inc_as_oper(inc);
@@ -647,7 +650,7 @@ jit_store_t *store_new(jit_address_t address) {
   return store;
 }
 
-void store_set_as_expr(jit_store_t *store, jit_expr_t *expr) {
+void store_set_subexpr(jit_store_t *store, jit_expr_t *expr) {
   ASSERT(store->subexpr == NULL, "store->subexpr == NULL\n");
   store->subexpr = expr;
   expr_as_oper(expr)->outer = store_as_oper(store);
@@ -803,45 +806,54 @@ void env_eval(env_t *env, jit_oper_t *oper, fat_noun_t args) {
 void jit_fib(fat_noun_t args) {
   struct heap *heap = machine->heap;
 
-  jit_decl_t *decl_f0_f1 = decl_new(CELL(_0, _1));
-  jit_decl_t *decl_counter = decl_new(_0);
-  /**/ decl_set_inner(decl_f0_f1, decl_as_oper(decl_counter));
-  jit_loop_t *loop = loop_new();
-  /**/ decl_set_inner(decl_counter, loop_as_oper(loop));
-  jit_binop_t *eq = binop_new(binop_eq_type);
-  /**/ loop_set_test(loop, binop_as_expr(eq));
-  jit_load_t *eq_left = load_new(15);
-  /**/ binop_set_left(eq, load_as_expr(eq_left));
-  jit_load_t *eq_right = load_new(6);
-  /**/ binop_set_right(eq, load_as_expr(eq_right));
-  jit_load_t *result = load_new(28);
-  /**/ loop_set_result(loop, load_as_expr(result));
+  // For testing, generate the AST that the pattern matcher *would*
+  // generate when parsing "fib" in Nock:
 
-  jit_store_t *store_6 = store_new(6);
-  /**/ loop_add_store(loop, store_6);
-  jit_inc_t *inc_6 = inc_new();
-  /**/ store_set_as_expr(store_6, inc_as_expr(inc_6));
-  jit_load_t *load_6 = load_new(6);
-  /**/ inc_set_as_expr(inc_6, load_as_expr(load_6));
-
-  jit_store_t *store_28 = store_new(28);
-  /**/ loop_add_store(loop, store_28);
-  jit_load_t *load_29 = load_new(29);
-  /**/ store_set_as_expr(store_28, load_as_expr(load_29));
-
-  jit_store_t *store_29 = store_new(29);
-  /**/ loop_add_store(loop, store_29);
-  jit_binop_t *add = binop_new(binop_add_type);
-  /**/ store_set_as_expr(store_29, load_as_expr(add));
-  jit_load_t *add_left = load_new(28);
-  /**/ binop_set_left(add, load_as_expr(add_left));
-  jit_load_t *add_right = load_new(29);
-  /**/ binop_set_right(add, load_as_expr(add_right));
-
-  jit_store_t *store_15 = store_new(15);
-  /**/ loop_add_store(loop, store_15);
-  jit_load_t *load_15 = load_new(15);
-  /**/ store_set_as_expr(store_15, load_as_expr(load_15));
+  jit_decl_t *decl_f0_f1 = decl_new(CELL(_0, _1)); {
+    jit_decl_t *decl_counter = decl_new(_0);
+    /**/ decl_set_inner(decl_f0_f1, decl_as_oper(decl_counter)); {
+      jit_loop_t *loop = loop_new();
+      /**/ decl_set_inner(decl_counter, loop_as_oper(loop)); {
+	jit_binop_t *eq = binop_new(binop_eq_type);
+	/**/ loop_set_test(loop, binop_as_expr(eq)); {
+	  jit_load_t *eq_left = load_new(15);
+	  /**/ binop_set_left(eq, load_as_expr(eq_left));
+	} {
+	  jit_load_t *eq_right = load_new(6);
+	  /**/ binop_set_right(eq, load_as_expr(eq_right));
+	} 
+      } {
+	jit_load_t *result = load_new(28);
+	/**/ loop_set_result(loop, load_as_expr(result));
+      } {
+	jit_store_t *store_6 = store_new(6);
+	/**/ loop_add_store(loop, store_6);
+	jit_inc_t *inc_6 = inc_new();
+	/**/ store_set_subexpr(store_6, inc_as_expr(inc_6));
+	jit_load_t *load_6 = load_new(6);
+	/**/ inc_set_subexpr(inc_6, load_as_expr(load_6));
+      } {
+	jit_store_t *store_28 = store_new(28);
+	/**/ loop_add_store(loop, store_28);
+	jit_load_t *load_29 = load_new(29);
+	/**/ store_set_subexpr(store_28, load_as_expr(load_29));
+      } {
+	jit_store_t *store_29 = store_new(29);
+	/**/ loop_add_store(loop, store_29);
+	jit_binop_t *add = binop_new(binop_add_type);
+	/**/ store_set_subexpr(store_29, load_as_expr(add));
+	jit_load_t *add_left = load_new(28);
+	/**/ binop_set_left(add, load_as_expr(add_left));
+	jit_load_t *add_right = load_new(29);
+	/**/ binop_set_right(add, load_as_expr(add_right));
+      } {
+	jit_store_t *store_15 = store_new(15);
+	/**/ loop_add_store(loop, store_15);
+	jit_load_t *load_15 = load_new(15);
+	/**/ store_set_subexpr(store_15, load_as_expr(load_15));
+      }
+    }
+  }
 
   env_t *env = env_new();
 
@@ -856,6 +868,67 @@ void jit_fib(fat_noun_t args) {
   else {
     fat_noun_t popped;
     printf("fib("); noun_print(stdout, args, true); printf(")="); noun_print(stdout, popped = env_pop(env), true); printf("\n");
+    UNSHARE(popped, STACK_OWNER);
+  }
+
+  DELETE(root);
+  env_delete(env);
+}
+
+void jit_dec(fat_noun_t args) {
+  struct heap *heap = machine->heap;
+
+  // For testing, generate the AST that the pattern matcher *would*
+  // generate when parsing "dec" in Nock:
+
+  jit_decl_t *decl_counter = decl_new(_0); {
+    jit_loop_t *loop = loop_new();
+    /**/ decl_set_inner(decl_counter, loop_as_oper(loop)); {
+      jit_binop_t *eq = binop_new(binop_eq_type);
+      /**/ loop_set_test(loop, binop_as_expr(eq)); {
+	jit_load_t *eq_left = load_new(7);
+	/**/ binop_set_left(eq, load_as_expr(eq_left));
+      } {
+	jit_inc_t *eq_right = inc_new();
+	/**/ binop_set_right(eq, inc_as_expr(eq_right)); {
+	  jit_load_t *load_6 = load_new(6);
+	  /**/ inc_set_subexpr(eq_right, load_as_expr(load_6));
+	}
+      }
+    } {
+      jit_load_t *result = load_new(6);
+      /**/ loop_set_result(loop, load_as_expr(result));
+    } {
+      jit_store_t *store_6 = store_new(6);
+      /**/ loop_add_store(loop, store_6); {
+	jit_inc_t *inc_6 = inc_new();
+	/**/ store_set_subexpr(store_6, inc_as_expr(inc_6)); {
+	  jit_load_t *load_6 = load_new(6);
+	  /**/ inc_set_subexpr(inc_6, load_as_expr(load_6));
+	}
+      }
+    } {
+      jit_store_t *store_7 = store_new(7);
+      /**/ loop_add_store(loop, store_7); {
+	jit_load_t *load_7 = load_new(7);
+	/**/ store_set_subexpr(store_7, load_as_expr(load_7));
+      }
+    }
+  }
+
+  env_t *env = env_new();
+
+  jit_oper_t *root = decl_as_oper(decl_counter);
+  PREP(root);
+
+  env_eval(env, root, args);
+
+  // QQQ
+  if (env->failed) 
+    ERROR0("Evaluation failed\n");
+  else {
+    fat_noun_t popped;
+    printf("dec("); noun_print(stdout, args, true); printf(")="); noun_print(stdout, popped = env_pop(env), true); printf("\n");
     UNSHARE(popped, STACK_OWNER);
   }
 

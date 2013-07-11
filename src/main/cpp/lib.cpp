@@ -347,6 +347,8 @@ typedef void (*prep_fn_t)(struct jit_oper *oper, env_t *env);
 #define PREP(oper) ((oper)->prep_fn)(oper, env)
 typedef void (*eval_fn_t)(struct jit_oper *oper, env_t *env);
 #define EVAL(oper) ((oper)->eval_fn)(oper, env)
+typedef void (*compile_fn_t)(struct jit_oper *oper, env_t *env);
+#define COMPILE(oper) ((oper)->compile_fn)(oper, env)
 typedef void (*delete_fn_t)(struct jit_oper *oper);
 #define DELETE(oper) ((oper)->delete_fn)(oper)
 
@@ -354,6 +356,7 @@ typedef struct jit_oper {
   struct jit_oper *outer;
   prep_fn_t prep_fn;
   eval_fn_t eval_fn;
+  compile_fn_t compile_fn;
   delete_fn_t delete_fn;
   // TODO: source information: file, line, column
 } jit_oper_t;
@@ -430,6 +433,10 @@ void decl_delete(jit_oper_t *oper) {
   free(decl);
 }
 
+void decl_compile(jit_oper_t *oper, env_t *env) {
+  //ZZZ
+}
+
 jit_decl_t *decl_new(tagged_noun_t local_variable_initial_values) {
   jit_decl_t *decl = ALLOC(jit_decl_t);
 
@@ -438,6 +445,7 @@ jit_decl_t *decl_new(tagged_noun_t local_variable_initial_values) {
   decl->local_variable_index_map = _UNDEFINED;
   decl_as_oper(decl)->prep_fn = decl_prep;
   decl_as_oper(decl)->eval_fn = decl_eval;
+  decl_as_oper(decl)->compile_fn = decl_compile;
   decl_as_oper(decl)->delete_fn = decl_delete;
 
   return decl;
@@ -512,12 +520,17 @@ void binop_delete(jit_oper_t *oper) {
   free(binop);
 }
 
+void binop_compile(jit_oper_t *oper, env_t *env) {
+  //ZZZ
+}
+
 jit_binop_t *binop_new(enum binop_type type) {
   jit_binop_t *binop = ALLOC(jit_binop_t);
 
   binop->type = type;
   binop_as_oper(binop)->prep_fn = binop_prep;
   binop_as_oper(binop)->eval_fn = binop_eval;
+  binop_as_oper(binop)->compile_fn = binop_compile;
   binop_as_oper(binop)->delete_fn = binop_delete;
 
   return binop;
@@ -575,11 +588,16 @@ void inc_delete(jit_oper_t *oper) {
   free(inc);
 }
 
+void inc_compile(jit_oper_t *oper, env_t *env) {
+  //ZZZ
+}
+
 jit_inc_t *inc_new() {
   jit_inc_t *inc = ALLOC(jit_inc_t);
 
   inc_as_oper(inc)->prep_fn = inc_prep;
   inc_as_oper(inc)->eval_fn = inc_eval;
+  inc_as_oper(inc)->compile_fn = inc_compile;
   inc_as_oper(inc)->delete_fn = inc_delete;
 
   return inc;
@@ -627,12 +645,17 @@ void load_delete(jit_oper_t *oper) {
   free(load);
 }
 
+void load_compile(jit_oper_t *oper, env_t *env) {
+  //ZZZ
+}
+
 jit_load_t *load_new(jit_address_t address) {
   jit_load_t *load = ALLOC(jit_load_t);
 
   load->address = address;
   load_as_oper(load)->prep_fn = load_prep;
   load_as_oper(load)->eval_fn = load_eval;
+  load_as_oper(load)->compile_fn = load_compile;
   load_as_oper(load)->delete_fn = load_delete;
 
   return load;
@@ -678,12 +701,17 @@ void store_delete(jit_oper_t *oper) {
   free(store);
 }
 
+void store_compile(jit_oper_t *oper, env_t *env) {
+  //ZZZ
+}
+
 jit_store_t *store_new(jit_address_t address) {
   jit_store_t *store = ALLOC(jit_store_t);
 
   store->address = address;
   store_as_oper(store)->prep_fn = store_prep;
   store_as_oper(store)->eval_fn = store_eval;
+  store_as_oper(store)->compile_fn = store_compile;
   store_as_oper(store)->delete_fn = store_delete;
 
   return store;
@@ -792,11 +820,16 @@ void loop_delete(jit_oper_t *oper) {
   free(loop);
 }
 
+void loop_compile(jit_oper_t *oper, env_t *env) {
+  //ZZZ
+}
+
 jit_loop_t *loop_new() {
   jit_loop_t *loop = ALLOC(jit_loop_t);
 
   loop_as_oper(loop)->prep_fn = loop_prep;
   loop_as_oper(loop)->eval_fn = loop_eval;
+  loop_as_oper(loop)->compile_fn = loop_compile;
   loop_as_oper(loop)->delete_fn = loop_delete;
 
   return loop;
@@ -847,6 +880,10 @@ void env_eval(env_t *env, jit_oper_t *oper, tagged_noun_t args) {
   env_initialize_args(env, args, env->args_root);
 
   EVAL(oper);
+}
+
+void env_compile(env_t *env, jit_oper_t *oper) {
+  //ZZZ
 }
 
 void env_prep(env_t *env, jit_oper_t *oper) {

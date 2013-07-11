@@ -107,11 +107,15 @@ typedef struct {
   std::vector<fat_noun_t> locals;
   std::vector<fat_noun_t> next_locals;
   std::vector<fat_noun_t> stack;
+  // Needed at function entry:
   fat_noun_t args_root;
+  // Only needed during prep (except for asserts):
+  fat_noun_t local_variable_index_map;
   fat_noun_t args_placeholder;
   fat_noun_t loop_body_placeholder;
-  fat_noun_t local_variable_index_map;
   jit_index_t next_local_variable_index;
+  jit_index_t current_stack_index;
+  jit_index_t max_stack_index;
   // Failure information:
   bool failed;
   const char *predicate;
@@ -145,8 +149,7 @@ static jit_index_t env_allocate_local(env_t *env) {
   return index;
 }
 
-static void
-env_allocate_address(env_t *env, jit_address_t address) {
+static void env_allocate_address(env_t *env, jit_address_t address) {
   ENV_CHECK_VOID(address >= 1, "Invalid address");
 
   fat_noun_t noun = env->local_variable_index_map;
@@ -172,7 +175,6 @@ env_allocate_address(env_t *env, jit_address_t address) {
     ancestors[i] = noun;
     choice[i] = (mask & address);
 
-    // ZZZ: check if cell else fail?
     noun = choice[i] ? noun_get_right(noun) : noun_get_left(noun);
     mask = (mask >> 1);
   }
@@ -248,11 +250,12 @@ env_t *env_new() {
   env->local_variable_index_map = env->args_placeholder;
   SHARE(env->local_variable_index_map, ENV_OWNER);
 
+  env->current_stack_index = -1;
+
   return env;
 }
 
 void env_delete(env_t *env) {
-  ENV_CHECK_VOID(env->stack.size() == 0, "Stack should be empty");
   for(std::vector<fat_noun_t>::iterator it = env->locals.begin(); it != env->locals.end(); ++it) {
     if (NOUN_IS_UNDEFINED(*it))
       ENV_CHECK_VOID(!NOUN_IS_UNDEFINED(*it), "Undefined local variable");
@@ -273,27 +276,32 @@ void env_delete(env_t *env) {
   free(env);
 }
 
-void env_push(env_t *env, fat_noun_t value) {
-  if (env->failed) return;
-
-  ENV_CHECK_VOID(env->stack.size() < JIT_STACK_MAX, "Stack overflow");
-  SHARE(value, STACK_OWNER);
-  env->stack.push_back(value);
-}
-
 /* Callers must unshare the value. */
-fat_noun_t env_pop(env_t *env) {
+fat_noun_t env_get_stack(env_t *env, jit_index_t index) {
   if (env->failed) return _UNDEFINED;
 
-  ENV_CHECK(env->stack.size() > 0, "Stack underflow", _UNDEFINED);
-  fat_noun_t value = env->stack.back();
-  env->stack.pop_back();
+  ENV_CHECK(index <= env->max_stack_index, "Invalid index", _UNDEFINED);
+
+  fat_noun_t value = env->stack[index];
+  ENV_CHECK(!NOUN_IS_UNDEFINED(value), "Undefined value", _UNDEFINED);
 
   return value;
 }
 
+void env_set_stack(env_t *env, jit_index_t index, fat_noun_t value) {
+  if (env->failed) return;
+
+  ENV_CHECK_VOID(index <= env->max_stack_index, "Invalid index");
+  ENV_CHECK_VOID(!NOUN_IS_UNDEFINED(value), "Undefined value");
+
+  SHARE(value, STACK_OWNER);
+  env->stack[index] = value;
+}
+
 static fat_noun_t env_get_local(env_t *env, jit_index_t index) {
   if (env->failed) return _UNDEFINED;
+
+  ENV_CHECK(index < env->next_locals.size(), "Invalid index", _UNDEFINED);
 
   fat_noun_t value = env->locals[index];
   ENV_CHECK(!NOUN_IS_UNDEFINED(value), "Undefined value", _UNDEFINED);
@@ -301,26 +309,26 @@ static fat_noun_t env_get_local(env_t *env, jit_index_t index) {
   return value;
 }
 
-static void env_set_local(env_t *env, jit_index_t index, fat_noun_t new_value) {
+static void env_set_local(env_t *env, jit_index_t index, fat_noun_t value) {
   if (env->failed) return;
 
   ENV_CHECK_VOID(index < env->next_locals.size(), "Invalid index");
   ENV_CHECK_VOID(NOUN_IS_UNDEFINED(env->next_locals[index]), "Overwritten value");
-  ENV_CHECK_VOID(!NOUN_IS_UNDEFINED(new_value), "Undefined value");
+  ENV_CHECK_VOID(!NOUN_IS_UNDEFINED(value), "Undefined value");
 
-  SHARE(new_value, LOCALS_OWNER);
-  env->next_locals[index] = new_value;
+  SHARE(value, LOCALS_OWNER);
+  env->next_locals[index] = value;
 }
 
-static void env_initialize_local(env_t *env, jit_index_t index, fat_noun_t new_value) {
+static void env_initialize_local(env_t *env, jit_index_t index, fat_noun_t value) {
   if (env->failed) return;
 
   ENV_CHECK_VOID(index < env->locals.size(), "Invalid index");
   ENV_CHECK_VOID(NOUN_IS_UNDEFINED(env->locals[index]), "Overwritten value");
-  ENV_CHECK_VOID(!NOUN_IS_UNDEFINED(new_value), "Undefined value");
+  ENV_CHECK_VOID(!NOUN_IS_UNDEFINED(value), "Undefined value");
 
-  SHARE(new_value, LOCALS_OWNER);
-  env->locals[index] = new_value;
+  SHARE(value, LOCALS_OWNER);
+  env->locals[index] = value;
 }
 
 static void env_declare_loop(env_t *env) {
@@ -344,6 +352,7 @@ typedef struct jit_oper {
 
 typedef struct jit_expr_t {
   jit_oper_t base;
+  jit_index_t stack_index;
 } jit_expr_t;
 
 #define expr_as_oper(expr) (&(expr)->base)
@@ -455,26 +464,29 @@ void binop_prep(jit_oper_t *oper, env_t *env) {
 
   PREP(expr_as_oper(binop->left));
   PREP(expr_as_oper(binop->right));
+
+  binop_as_expr(binop)->stack_index = --env->current_stack_index;
 }
 
 void binop_eval(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
 
   jit_binop_t *binop = oper_as_binop(oper);
+  jit_expr_t *expr = binop_as_expr(binop);
 
   EVAL(expr_as_oper(binop->left));
   EVAL(expr_as_oper(binop->right));
 
-  fat_noun_t n1 = env_pop(env);
-  fat_noun_t n2 = env_pop(env);
+  fat_noun_t n1 = env_get_stack(env, expr->stack_index);
+  fat_noun_t n2 = env_get_stack(env, expr->stack_index + 1);
 
   if (!env->failed) {
     switch (binop->type) {
     case binop_eq_type:
-      env_push(env, (eq(n1, n2) ? _YES : _NO));
+      env_set_stack(env, expr->stack_index, (eq(n1, n2) ? _YES : _NO));
       break;
     case binop_add_type:
-      env_push(env, add(n1, n2));
+      env_set_stack(env, expr->stack_index, add(n1, n2));
       break;
     }
   }
@@ -527,17 +539,24 @@ typedef struct jit_inc {
 void inc_eval(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
 
-  EVAL(expr_as_oper(oper_as_inc(oper)->subexpr));
+  jit_inc_t *_inc = oper_as_inc(oper);
+  jit_expr_t *expr = inc_as_expr(_inc);
+
+  EVAL(expr_as_oper(_inc->subexpr));
   
   fat_noun_t popped;
-  env_push(env, inc(popped = env_pop(env)));
+  env_set_stack(env, expr->stack_index, inc(popped = env_get_stack(env, expr->stack_index)));
   UNSHARE(popped, STACK_OWNER);
 }
 
 void inc_prep(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
 
-  PREP(expr_as_oper(oper_as_inc(oper)->subexpr));
+  jit_inc_t *inc = oper_as_inc(oper);
+
+  PREP(expr_as_oper(inc->subexpr));
+
+  inc_as_expr(inc)->stack_index = env->current_stack_index;
 }
 
 void inc_delete(jit_oper_t *oper) {
@@ -576,13 +595,22 @@ typedef struct jit_load {
 void load_prep(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
 
-  env_allocate_address(env, oper_as_load(oper)->address);
+  jit_load_t *load = oper_as_load(oper);
+
+  env_allocate_address(env, load->address);
+
+  load_as_expr(load)->stack_index = ++env->current_stack_index;
+  if (env->current_stack_index > env->max_stack_index)
+    env->max_stack_index = env->current_stack_index;
 }
 
 void load_eval(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
 
-  env_push(env, env_get_local(env, env_get_index_of_address(env, oper_as_load(oper)->address)));
+  jit_load_t *load = oper_as_load(oper);
+  jit_expr_t *expr = load_as_expr(load);
+
+  env_set_stack(env, expr->stack_index, env_get_local(env, env_get_index_of_address(env, load->address)));
 }
 
 void load_delete(jit_oper_t *oper) {
@@ -619,16 +647,20 @@ void store_prep(jit_oper_t *oper, env_t *env) {
   PREP(expr_as_oper(store->subexpr));
 
   env_allocate_address(env, oper_as_load(oper)->address);
+
+  store_as_expr(store)->stack_index = env->current_stack_index--;
 }
 
 void store_eval(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
 
-  jit_store_t *store = (jit_store_t *)oper;
+  jit_store_t *store = oper_as_store(oper);
+  jit_expr_t *expr = store_as_expr(store);
+
   EVAL(expr_as_oper(store->subexpr));
 
   fat_noun_t popped;
-  env_set_local(env, env_get_index_of_address(env, oper_as_load(oper)->address), popped = env_pop(env));
+  env_set_local(env, env_get_index_of_address(env, oper_as_load(oper)->address), popped = env_get_stack(env, expr->stack_index));
   UNSHARE(popped, STACK_OWNER);
 }
 
@@ -680,7 +712,12 @@ void loop_prep(jit_oper_t *oper, env_t *env) {
   jit_loop_t *loop = oper_as_loop(oper);
 
   PREP(expr_as_oper(loop->test));
+
+  loop_as_expr(loop)->stack_index = env->current_stack_index--;
+
   PREP(expr_as_oper(loop->result));
+
+  --env->current_stack_index;
 
   jit_store_list_t *store_list = loop->first_store;
   while (store_list != NULL) {
@@ -693,13 +730,15 @@ void loop_eval(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
 
   jit_loop_t *loop = oper_as_loop(oper);
+  jit_expr_t *expr = loop_as_expr(loop);
+
   while (true) {
     jit_oper_t *test = expr_as_oper(loop->test);
     EVAL(test);
 
     if (env->failed) return;
     fat_noun_t popped;
-    bool is_eq = eq(popped = env_pop(env), _YES);
+    bool is_eq = eq(popped = env_get_stack(env, expr->stack_index), _YES);
     UNSHARE(popped, STACK_OWNER);
 
     if (is_eq) {
@@ -802,6 +841,12 @@ void env_eval(env_t *env, jit_oper_t *oper, fat_noun_t args) {
   EVAL(oper);
 }
 
+void env_prep(env_t *env, jit_oper_t *oper) {
+  PREP(oper);
+
+  env->stack.resize(env->max_stack_index + 1, _UNDEFINED);
+}
+
 void jit_fib(fat_noun_t args) {
   struct heap *heap = machine->heap;
 
@@ -857,8 +902,8 @@ void jit_fib(fat_noun_t args) {
   env_t *env = env_new();
 
   jit_oper_t *root = decl_as_oper(decl_f0_f1);
-  PREP(root);
 
+  env_prep(env, root);
   env_eval(env, root, args);
 
   // QQQ
@@ -866,7 +911,7 @@ void jit_fib(fat_noun_t args) {
     ERROR0("Evaluation failed\n");
   else {
     fat_noun_t popped;
-    printf("fib("); noun_print(stdout, args, true); printf(")="); noun_print(stdout, popped = env_pop(env), true); printf("\n");
+    printf("fib("); noun_print(stdout, args, true); printf(")="); noun_print(stdout, popped = env_get_stack(env, 0), true); printf("\n");
     UNSHARE(popped, STACK_OWNER);
   }
 
@@ -918,8 +963,8 @@ void jit_dec(fat_noun_t args) {
   env_t *env = env_new();
 
   jit_oper_t *root = decl_as_oper(decl_counter);
-  PREP(root);
 
+  env_prep(env, root);
   env_eval(env, root, args);
 
   // QQQ
@@ -927,7 +972,7 @@ void jit_dec(fat_noun_t args) {
     ERROR0("Evaluation failed\n");
   else {
     fat_noun_t popped;
-    printf("dec("); noun_print(stdout, args, true); printf(")="); noun_print(stdout, popped = env_pop(env), true); printf("\n");
+    printf("dec("); noun_print(stdout, args, true); printf(")="); noun_print(stdout, popped = env_get_stack(env, 0), true); printf("\n");
     UNSHARE(popped, STACK_OWNER);
   }
 

@@ -18,12 +18,12 @@ void machine_set(machine_t *m) {
   machine = m;
 }
 
-static inline fat_noun_t
-add(fat_noun_t n1, fat_noun_t n2) {
+static inline tagged_noun_t
+add(tagged_noun_t n1, tagged_noun_t n2) {
   ASSERT(noun_is_valid_atom(n1, machine->heap), "noun_is_valid_atom(n1, machine->heap)\n");
   ASSERT(noun_is_valid_atom(n2, machine->heap), "noun_is_valid_atom(n2, machine->heap)\n");
 
-  if (n1.flags & n2.flags & NOUN_SATOM_FLAG) {
+  if (NOUN_IS_SATOM(n1) && NOUN_IS_SATOM(n2)) {
     satom_t sn1 = noun_as_satom(n1);
     satom_t sn2 = noun_as_satom(n2);
     satom_t sum = sn1 + sn2;
@@ -34,11 +34,11 @@ add(fat_noun_t n1, fat_noun_t n2) {
   return atom_add(n1, n2, machine->heap);
 }
 
-static inline fat_noun_t
-inc(fat_noun_t n) {
+static inline tagged_noun_t
+inc(tagged_noun_t n) {
   ASSERT(noun_is_valid_atom(n, machine->heap), "noun_is_valid_atom(n, machine->heap)\n");
 
-  if (n.flags & NOUN_SATOM_FLAG) {
+  if (NOUN_IS_SATOM(n)) {
     satom_t satom = noun_as_satom(n);
     if (satom < SATOM_MAX)
       return satom_as_noun(satom + 1);
@@ -48,29 +48,29 @@ inc(fat_noun_t n) {
 }
 
 static inline bool
-eq(fat_noun_t n1, fat_noun_t n2) {
+eq(tagged_noun_t n1, tagged_noun_t n2) {
   ASSERT(noun_is_valid_atom(n1, machine->heap), "noun_is_valid_atom(n1, machine->heap)\n");
   ASSERT(noun_is_valid_atom(n2, machine->heap), "noun_is_valid_atom(n2, machine->heap)\n");
 
-  if (n1.flags & n2.flags & NOUN_SATOM_FLAG)
+  if (NOUN_IS_SATOM(n1) && NOUN_IS_SATOM(n2))
     return noun_as_satom(n1) == noun_as_satom(n2);
   else
     return atom_equals(n1, n2);
 }
 
-extern fat_noun_t
-fib(fat_noun_t n) {
+extern tagged_noun_t
+fib(tagged_noun_t n) {
   ASSERT(noun_is_valid_atom(n, machine->heap), "noun_is_valid_atom(n, machine->heap)\n");
 
-  fat_noun_t f0 = _0;
-  fat_noun_t f1 = _1;
-  fat_noun_t counter = _0;
+  tagged_noun_t f0 = _0;
+  tagged_noun_t f1 = _1;
+  tagged_noun_t counter = _0;
   while (true) {
     if (eq(n, counter))
       return f0;
     else {
       counter = inc(counter);
-      fat_noun_t sum = add(f0, f1);
+      tagged_noun_t sum = add(f0, f1);
       f0 = f1;
       f1 = sum;
     }
@@ -87,7 +87,7 @@ fib(fat_noun_t n) {
 #define SHARE(noun, o) noun_share(noun, machine->heap)
 #define UNSHARE(noun, o) noun_unshare(noun, machine->heap, true)
 #endif
-#define ASSIGN(l, r, o) do { fat_noun_t old = l; l = SHARE(r, o) ; UNSHARE(old, o); } while (false)
+#define ASSIGN(l, r, o) do { tagged_noun_t old = l; l = SHARE(r, o) ; UNSHARE(old, o); } while (false)
 
 // Addresses a node in a tree: an argument to the slash operator.
 typedef uint32_t jit_address_t;
@@ -104,15 +104,15 @@ typedef uint32_t jit_index_t;
 
 typedef struct {
   // REVISIT: replace STL uses with small C classes?
-  std::vector<fat_noun_t> locals;
-  std::vector<fat_noun_t> next_locals;
-  std::vector<fat_noun_t> stack;
+  std::vector<tagged_noun_t> locals;
+  std::vector<tagged_noun_t> next_locals;
+  std::vector<tagged_noun_t> stack;
   // Needed at function entry:
-  fat_noun_t args_root;
+  tagged_noun_t args_root;
   // Only needed during prep (except for asserts):
-  fat_noun_t local_variable_index_map;
-  fat_noun_t args_placeholder;
-  fat_noun_t loop_body_placeholder;
+  tagged_noun_t local_variable_index_map;
+  tagged_noun_t args_placeholder;
+  tagged_noun_t loop_body_placeholder;
   jit_index_t next_local_variable_index;
   jit_index_t current_stack_index;
   jit_index_t max_stack_index;
@@ -152,9 +152,9 @@ static jit_index_t env_allocate_local(env_t *env) {
 static void env_allocate_address(env_t *env, jit_address_t address) {
   ENV_CHECK_VOID(address >= 1, "Invalid address");
 
-  fat_noun_t noun = env->local_variable_index_map;
+  tagged_noun_t noun = env->local_variable_index_map;
   int depth = (sizeof(address) * 8 - __builtin_clz(address) - 1);
-  fat_noun_t ancestors[depth];
+  tagged_noun_t ancestors[depth];
   bool choice[depth];
 
   // Run through the bits from left to right:
@@ -194,7 +194,7 @@ static void env_allocate_address(env_t *env, jit_address_t address) {
       SHARE(env->args_root, ENV_OWNER);
     }
 
-    fat_noun_t n = noun;
+    tagged_noun_t n = noun;
     int i;
     for (i = depth - 1; i >= 0; --i) {
       if (choice[i])
@@ -218,7 +218,7 @@ static jit_index_t
 env_get_index_of_address(env_t *env, jit_address_t address) {
   ENV_CHECK(address >= 1, "Invalid address", 0);
 
-  fat_noun_t noun = env->local_variable_index_map;
+  tagged_noun_t noun = env->local_variable_index_map;
   ENV_CHECK(!NOUN_EQUALS(noun, env->loop_body_placeholder), "Cannot refer to the loop body", 0);
   ENV_CHECK(!NOUN_EQUALS(noun, env->args_placeholder), "Undefined value", 0);
   int depth = (sizeof(address) * 8 - __builtin_clz(address) - 1);
@@ -256,14 +256,14 @@ env_t *env_new() {
 }
 
 void env_delete(env_t *env) {
-  for(std::vector<fat_noun_t>::iterator it = env->locals.begin(); it != env->locals.end(); ++it) {
+  for(std::vector<tagged_noun_t>::iterator it = env->locals.begin(); it != env->locals.end(); ++it) {
     if (NOUN_IS_UNDEFINED(*it))
       ENV_CHECK_VOID(!NOUN_IS_UNDEFINED(*it), "Undefined local variable");
     else
       UNSHARE(*it, LOCALS_OWNER);
   }
   env->locals.~vector();
-  for(std::vector<fat_noun_t>::iterator it = env->next_locals.begin(); it != env->next_locals.end(); ++it) {
+  for(std::vector<tagged_noun_t>::iterator it = env->next_locals.begin(); it != env->next_locals.end(); ++it) {
     ENV_CHECK_VOID(NOUN_IS_UNDEFINED(*it), "Leaked local variable");
   }
   env->next_locals.~vector();
@@ -277,18 +277,18 @@ void env_delete(env_t *env) {
 }
 
 /* Callers must unshare the value. */
-fat_noun_t env_get_stack(env_t *env, jit_index_t index) {
+tagged_noun_t env_get_stack(env_t *env, jit_index_t index) {
   if (env->failed) return _UNDEFINED;
 
   ENV_CHECK(index <= env->max_stack_index, "Invalid index", _UNDEFINED);
 
-  fat_noun_t value = env->stack[index];
+  tagged_noun_t value = env->stack[index];
   ENV_CHECK(!NOUN_IS_UNDEFINED(value), "Undefined value", _UNDEFINED);
 
   return value;
 }
 
-void env_set_stack(env_t *env, jit_index_t index, fat_noun_t value) {
+void env_set_stack(env_t *env, jit_index_t index, tagged_noun_t value) {
   if (env->failed) return;
 
   ENV_CHECK_VOID(index <= env->max_stack_index, "Invalid index");
@@ -298,18 +298,18 @@ void env_set_stack(env_t *env, jit_index_t index, fat_noun_t value) {
   env->stack[index] = value;
 }
 
-static fat_noun_t env_get_local(env_t *env, jit_index_t index) {
+static tagged_noun_t env_get_local(env_t *env, jit_index_t index) {
   if (env->failed) return _UNDEFINED;
 
   ENV_CHECK(index < env->next_locals.size(), "Invalid index", _UNDEFINED);
 
-  fat_noun_t value = env->locals[index];
+  tagged_noun_t value = env->locals[index];
   ENV_CHECK(!NOUN_IS_UNDEFINED(value), "Undefined value", _UNDEFINED);
 
   return value;
 }
 
-static void env_set_local(env_t *env, jit_index_t index, fat_noun_t value) {
+static void env_set_local(env_t *env, jit_index_t index, tagged_noun_t value) {
   if (env->failed) return;
 
   ENV_CHECK_VOID(index < env->next_locals.size(), "Invalid index");
@@ -320,7 +320,7 @@ static void env_set_local(env_t *env, jit_index_t index, fat_noun_t value) {
   env->next_locals[index] = value;
 }
 
-static void env_initialize_local(env_t *env, jit_index_t index, fat_noun_t value) {
+static void env_initialize_local(env_t *env, jit_index_t index, tagged_noun_t value) {
   if (env->failed) return;
 
   ENV_CHECK_VOID(index < env->locals.size(), "Invalid index");
@@ -360,17 +360,17 @@ typedef struct jit_expr_t {
 typedef struct jit_decl {
   jit_oper_t base;
   jit_oper_t *inner;
-  fat_noun_t local_variable_initial_values;
-  fat_noun_t local_variable_index_map;
+  tagged_noun_t local_variable_initial_values;
+  tagged_noun_t local_variable_index_map;
 } jit_decl_t;
 
 #define decl_as_oper(decl) (&(decl)->base)
 #define oper_as_decl(oper) ((jit_decl_t *)(oper))
 
-static fat_noun_t decl_prep_impl(env_t *env, fat_noun_t local_variable_initial_values) {
+static tagged_noun_t decl_prep_impl(env_t *env, tagged_noun_t local_variable_initial_values) {
   if (noun_get_type(local_variable_initial_values) == cell_type) {
-    fat_noun_t left = decl_prep_impl(env, noun_get_left(local_variable_initial_values));
-    fat_noun_t right = decl_prep_impl(env, noun_get_right(local_variable_initial_values));
+    tagged_noun_t left = decl_prep_impl(env, noun_get_left(local_variable_initial_values));
+    tagged_noun_t right = decl_prep_impl(env, noun_get_right(local_variable_initial_values));
     return cell_new(machine->heap, left, right);
   } else {
     // Allocate a local variable slot for a declared variable:
@@ -386,13 +386,13 @@ void decl_prep(jit_oper_t *oper, env_t *env) {
   decl->local_variable_index_map = decl_prep_impl(env, decl->local_variable_initial_values);
   SHARE(decl->local_variable_index_map, AST_OWNER);
 
-  fat_noun_t new_local_variable_index_map = cell_new(machine->heap, decl->local_variable_index_map, env->local_variable_index_map);
+  tagged_noun_t new_local_variable_index_map = cell_new(machine->heap, decl->local_variable_index_map, env->local_variable_index_map);
   ASSIGN(env->local_variable_index_map, new_local_variable_index_map, ENV_OWNER);
 
   PREP(decl->inner);
 }
 
-static void decl_eval_impl(env_t *env, fat_noun_t local_variable_initial_values, fat_noun_t local_variable_index_map) {
+static void decl_eval_impl(env_t *env, tagged_noun_t local_variable_initial_values, tagged_noun_t local_variable_index_map) {
   if (noun_get_type(local_variable_initial_values) == cell_type) {
     decl_eval_impl(env, noun_get_left(local_variable_initial_values), noun_get_left(local_variable_index_map));
     decl_eval_impl(env, noun_get_right(local_variable_initial_values), noun_get_right(local_variable_index_map));
@@ -422,7 +422,7 @@ void decl_delete(jit_oper_t *oper) {
   free(decl);
 }
 
-jit_decl_t *decl_new(fat_noun_t local_variable_initial_values) {
+jit_decl_t *decl_new(tagged_noun_t local_variable_initial_values) {
   jit_decl_t *decl = ALLOC(jit_decl_t);
 
   SHARE(local_variable_initial_values, AST_OWNER);
@@ -477,8 +477,8 @@ void binop_eval(jit_oper_t *oper, env_t *env) {
   EVAL(expr_as_oper(binop->left));
   EVAL(expr_as_oper(binop->right));
 
-  fat_noun_t n1 = env_get_stack(env, expr->stack_index);
-  fat_noun_t n2 = env_get_stack(env, expr->stack_index + 1);
+  tagged_noun_t n1 = env_get_stack(env, expr->stack_index);
+  tagged_noun_t n2 = env_get_stack(env, expr->stack_index + 1);
 
   if (!env->failed) {
     switch (binop->type) {
@@ -544,7 +544,7 @@ void inc_eval(jit_oper_t *oper, env_t *env) {
 
   EVAL(expr_as_oper(_inc->subexpr));
   
-  fat_noun_t popped;
+  tagged_noun_t popped;
   env_set_stack(env, expr->stack_index, inc(popped = env_get_stack(env, expr->stack_index)));
   UNSHARE(popped, STACK_OWNER);
 }
@@ -659,7 +659,7 @@ void store_eval(jit_oper_t *oper, env_t *env) {
 
   EVAL(expr_as_oper(store->subexpr));
 
-  fat_noun_t popped;
+  tagged_noun_t popped;
   env_set_local(env, env_get_index_of_address(env, oper_as_load(oper)->address), popped = env_get_stack(env, expr->stack_index));
   UNSHARE(popped, STACK_OWNER);
 }
@@ -737,7 +737,7 @@ void loop_eval(jit_oper_t *oper, env_t *env) {
     EVAL(test);
 
     if (env->failed) return;
-    fat_noun_t popped;
+    tagged_noun_t popped;
     bool is_eq = eq(popped = env_get_stack(env, expr->stack_index), _YES);
     UNSHARE(popped, STACK_OWNER);
 
@@ -753,8 +753,8 @@ void loop_eval(jit_oper_t *oper, env_t *env) {
 	store_list = store_list->next;
       }
       // Copy the locals for the next iteration:
-      std::vector<fat_noun_t>::iterator lit = env->next_locals.begin();
-      for(std::vector<fat_noun_t>::iterator cit = env->locals.begin(); cit != env->locals.end(); ++cit) {
+      std::vector<tagged_noun_t>::iterator lit = env->next_locals.begin();
+      for(std::vector<tagged_noun_t>::iterator cit = env->locals.begin(); cit != env->locals.end(); ++cit) {
 	UNSHARE(*cit, LOCALS_OWNER);
 	*cit = *lit;
 	*lit = _UNDEFINED;
@@ -820,7 +820,7 @@ void loop_add_store(jit_loop_t *loop, jit_store_t *store) {
   }
 }
 
-static void env_initialize_args(env_t *env, fat_noun_t args, fat_noun_t args_root) {
+static void env_initialize_args(env_t *env, tagged_noun_t args, tagged_noun_t args_root) {
   if (noun_get_type(args) == cell_type) {
     ENV_CHECK_VOID(noun_get_type(args_root) == cell_type, "Argument type mismatch");
     env_initialize_args(env, noun_get_left(args), noun_get_left(args_root));
@@ -833,7 +833,7 @@ static void env_initialize_args(env_t *env, fat_noun_t args, fat_noun_t args_roo
   }
 }
 
-void env_eval(env_t *env, jit_oper_t *oper, fat_noun_t args) {
+void env_eval(env_t *env, jit_oper_t *oper, tagged_noun_t args) {
   ENV_CHECK_VOID(NOUN_IS_UNDEFINED(args) == NOUN_IS_UNDEFINED(env->args_root), "Arguments mismatch");
 
   env_initialize_args(env, args, env->args_root);
@@ -847,7 +847,7 @@ void env_prep(env_t *env, jit_oper_t *oper) {
   env->stack.resize(env->max_stack_index + 1, _UNDEFINED);
 }
 
-void jit_fib(fat_noun_t args) {
+void jit_fib(tagged_noun_t args) {
   struct heap *heap = machine->heap;
 
   // For testing, generate the AST that the pattern matcher *would*
@@ -910,7 +910,7 @@ void jit_fib(fat_noun_t args) {
   if (env->failed) 
     ERROR0("Evaluation failed\n");
   else {
-    fat_noun_t popped;
+    tagged_noun_t popped;
     printf("fib("); noun_print(stdout, args, true); printf(")="); noun_print(stdout, popped = env_get_stack(env, 0), true); printf("\n");
     UNSHARE(popped, STACK_OWNER);
   }
@@ -919,7 +919,7 @@ void jit_fib(fat_noun_t args) {
   env_delete(env);
 }
 
-void jit_dec(fat_noun_t args) {
+void jit_dec(tagged_noun_t args) {
   struct heap *heap = machine->heap;
 
   // For testing, generate the AST that the pattern matcher *would*
@@ -971,7 +971,7 @@ void jit_dec(fat_noun_t args) {
   if (env->failed) 
     ERROR0("Evaluation failed\n");
   else {
-    fat_noun_t popped;
+    tagged_noun_t popped;
     printf("dec("); noun_print(stdout, args, true); printf(")="); noun_print(stdout, popped = env_get_stack(env, 0), true); printf("\n");
     UNSHARE(popped, STACK_OWNER);
   }

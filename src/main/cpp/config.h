@@ -28,5 +28,8 @@
 #ifndef NOCK_LLVM
 #define NOCK_LLVM false
 #endif
+#ifndef FAT_NOUNS
+#define FAT_NOUNS false
+#endif
 
 #endif /* #if !defined(CONFIG_H) */

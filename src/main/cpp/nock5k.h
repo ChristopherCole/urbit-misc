@@ -39,18 +39,26 @@ static mpz_t SATOM_MAX_MPZ;
 /* 64 bit pointers */
 typedef uint64_t satom_t;
 #define SATOM_FMT PRIu64
-#define SATOM_MAX UINT64_MAX
+#define SATOM_T_MAX UINT64_MAX
 #elif UINTPTR_MAX == UINT32_MAX
 /* 32 bit pointers */
 typedef uint32_t satom_t;
 #define SATOM_FMT PRIu32
-#define SATOM_MAX UINT32_MAX
+#define SATOM_T_MAX UINT32_MAX
 #else
 /* PDP-10, is that you? */
 #error Unsupported pointer size (require 32 or 64 bits)
 #endif
 
 typedef struct noun { } noun_t;
+
+#if FAT_NOUNS
+typedef struct { noun_t *ptr; int flags; } tagged_noun_t;
+typedef noun_t *cell_ref_t;
+#else
+typedef satom_t tagged_noun_t;
+typedef tagged_noun_t cell_ref_t;
+#endif
 
 typedef struct base { 
 #if INLINE_REFS
@@ -61,23 +69,18 @@ typedef struct base {
   struct base *next;
   unsigned long id;
 #endif
-  noun_t *left;
+  cell_ref_t left;
 } base_t;
 
 typedef struct cell {
   base_t base;
-  noun_t *right;
+  cell_ref_t right;
 } cell_t;
 
 typedef struct {
   base_t base;
   mpz_t val;
 } batom_t;
-
-typedef struct {
-  noun_t *ptr;
-  int flags;
-} fat_noun_t;
 
 enum noun_type {
   cell_type,
@@ -112,38 +115,11 @@ typedef struct machine {
 #endif  
 } machine_t;
 
-#if NO_SATOMS
-extern fat_noun_t _UNDEFINED;
-extern fat_noun_t _0;
-extern fat_noun_t _1;
-extern fat_noun_t _2;
-extern fat_noun_t _3;
-extern fat_noun_t _4;
-extern fat_noun_t _5;
-extern fat_noun_t _6;
-extern fat_noun_t _7;
-extern fat_noun_t _8;
-extern fat_noun_t _9;
-extern fat_noun_t _10;
-#else
-#define _UNDEFINED ((fat_noun_t){ .ptr = (noun_t *)0, .flags = 0 })
-#define _0 ((fat_noun_t){ .ptr = (noun_t *)0, .flags = NOUN_SATOM_FLAG })
-#define _1 ((fat_noun_t){ .ptr = (noun_t *)1, .flags = NOUN_SATOM_FLAG })
-#define _2 ((fat_noun_t){ .ptr = (noun_t *)2, .flags = NOUN_SATOM_FLAG })
-#define _3 ((fat_noun_t){ .ptr = (noun_t *)3, .flags = NOUN_SATOM_FLAG })
-#define _4 ((fat_noun_t){ .ptr = (noun_t *)4, .flags = NOUN_SATOM_FLAG })
-#define _5 ((fat_noun_t){ .ptr = (noun_t *)5, .flags = NOUN_SATOM_FLAG })
-#define _6 ((fat_noun_t){ .ptr = (noun_t *)6, .flags = NOUN_SATOM_FLAG })
-#define _7 ((fat_noun_t){ .ptr = (noun_t *)7, .flags = NOUN_SATOM_FLAG })
-#define _8 ((fat_noun_t){ .ptr = (noun_t *)8, .flags = NOUN_SATOM_FLAG })
-#define _9 ((fat_noun_t){ .ptr = (noun_t *)9, .flags = NOUN_SATOM_FLAG })
-#define _10 ((fat_noun_t){ .ptr = (noun_t *)10, .flags = NOUN_SATOM_FLAG })
-#endif
-
 /* Note: We use pointer tagging to distinguish types.  Implicitly,
  * this means that we assume that allocations will give us the low two
  * bits to play with (aligned on at least 4 byte boundary). We assert
  * this (TODO). */
+#if FAT_NOUNS
 #define NOUN_SATOM_FLAG 1
 #define NOUN_PTR_SATOM_LEFT_FLAG 1
 #define NOUN_PTR_SATOM_RIGHT_FLAG 2
@@ -151,8 +127,38 @@ extern fat_noun_t _10;
 #define NOUN_IS_LEFT_SATOM(noun_ptr) ((((satom_t)noun_ptr) & NOUN_PTR_SATOM_LEFT_FLAG) == NOUN_PTR_SATOM_LEFT_FLAG)
 #define NOUN_IS_RIGHT_SATOM(noun_ptr) ((((satom_t)noun_ptr) & NOUN_PTR_SATOM_RIGHT_FLAG) == NOUN_PTR_SATOM_RIGHT_FLAG)
 #define NOUN_RAW_PTR(noun_ptr) ((void *)(((satom_t)noun_ptr) & ~(satom_t)NOUN_PTR_FLAGS))
-
+#define NOUN_AS_BASE(noun) ((base_t *)NOUN_RAW_PTR((noun).ptr))
 #define NOUN_EQUALS(n1, n2) ((n1).ptr == (n2).ptr && (n1).flags == (n2).flags)
+#define BATOM_AS_NOUN(batom) ((tagged_noun_t){ .ptr = (noun_t *)(batom), .flags = 0 })
+#define NOUN_AS_SATOM(noun) ((satom_t)((noun).ptr))
+#define SATOM_AS_NOUN(satom) ((tagged_noun_t){ .ptr = (noun_t *)(satom), .flags = NOUN_SATOM_FLAG })
+#define NOUN_IS_SATOM(noun) (((noun).flags & NOUN_SATOM_FLAG) == NOUN_SATOM_FLAG)
+#define NOUN_IS_BATOM(noun) (((base_t *)((NOUN_AS_BASE(noun))->left)) == NOUN_AS_BASE(noun))
+#define NOUN_IS_CELL(noun) (((base_t *)((NOUN_AS_BASE(noun))->left)) != NOUN_AS_BASE(noun))
+#define _UNDEFINED ((tagged_noun_t){ .ptr = (noun_t *)0, .flags = 0 })
+#define CELL_REF_NULL NULL
+#define SATOM_MAX ((satom_t)SATOM_T_MAX)
+#else /* !FAT_NOUNS */
+#define NOUN_NOT_SATOM_FLAG 1
+#define NOUN_CELL_FLAG 2
+#define NOUN_FLAGS (NOUN_NOT_SATOM_FLAG | NOUN_CELL_FLAG)
+#define NOUN_AS_PTR(noun) ((noun) & ~(tagged_noun_t)NOUN_FLAGS)
+#define NOUN_AS_BASE(noun) ((base_t *)NOUN_AS_PTR(noun))
+#define CELL_AS_NOUN(cell) (((tagged_noun_t)(cell)) | NOUN_CELL_FLAG | NOUN_NOT_SATOM_FLAG)
+#define NOUN_EQUALS(n1, n2) ((n1) == (n2))
+#define BATOM_AS_NOUN(batom) (((tagged_noun_t)(batom)) | NOUN_NOT_SATOM_FLAG)
+#define SATOM_AS_NOUN(satom) ((tagged_noun_t)((satom)<<1))
+#define NOUN_AS_SATOM(noun) ((satom_t)((noun)>>1))
+#define NOUN_IS_SATOM(noun) ((((noun) & NOUN_NOT_SATOM_FLAG)) == 0)
+#define NOUN_IS_CELL(noun) ((((noun) & (NOUN_NOT_SATOM_FLAG | NOUN_CELL_FLAG))) == (NOUN_NOT_SATOM_FLAG | NOUN_CELL_FLAG))
+#define NOUN_IS_BATOM(noun) ((((noun) & (NOUN_NOT_SATOM_FLAG | NOUN_CELL_FLAG))) == NOUN_NOT_SATOM_FLAG)
+#define _UNDEFINED ((tagged_noun_t)~0)
+#define CELL_REF_NULL ((cell_ref_t)0)
+#define SATOM_MAX (((satom_t)SATOM_T_MAX)>>1)
+#endif /* !FAT_NOUNS */
+
+#define NOUN_AS_CELL(noun) ((cell_t *)NOUN_AS_BASE(noun))
+#define NOUN_AS_BATOM(noun) ((batom_t *)NOUN_AS_BASE(noun))
 #define NOUN_IS_UNDEFINED(noun) NOUN_EQUALS(noun, _UNDEFINED)
 #define CELL(left, right) cell_new(heap, left, right)
 
@@ -167,6 +173,33 @@ extern fat_noun_t _10;
 #define LOCALS_OWNER ((base_t *)7) /* For the local variables during abstract interpretation */
 #endif
 
+#if NO_SATOMS
+extern tagged_noun_t _UNDEFINED;
+extern tagged_noun_t _0;
+extern tagged_noun_t _1;
+extern tagged_noun_t _2;
+extern tagged_noun_t _3;
+extern tagged_noun_t _4;
+extern tagged_noun_t _5;
+extern tagged_noun_t _6;
+extern tagged_noun_t _7;
+extern tagged_noun_t _8;
+extern tagged_noun_t _9;
+extern tagged_noun_t _10;
+#else
+#define _0 SATOM_AS_NOUN(0)
+#define _1 SATOM_AS_NOUN(1)
+#define _2 SATOM_AS_NOUN(2)
+#define _3 SATOM_AS_NOUN(3)
+#define _4 SATOM_AS_NOUN(4)
+#define _5 SATOM_AS_NOUN(5)
+#define _6 SATOM_AS_NOUN(6)
+#define _7 SATOM_AS_NOUN(7)
+#define _8 SATOM_AS_NOUN(8)
+#define _9 SATOM_AS_NOUN(9)
+#define _10 SATOM_AS_NOUN(10)
+#endif
+
 extern "C" {
 /* Sets the thread-local variable holding the pointer to the machine. */
 void machine_set(machine_t *m);
@@ -178,86 +211,93 @@ void fail(const char *predicate, const char *file, const char *function, int lin
 void nock_log(const char *format, ...);
 
 static inline enum noun_type
-noun_get_type(fat_noun_t noun) {
-  if ((noun.flags & NOUN_SATOM_FLAG) == NOUN_SATOM_FLAG)
+noun_get_type(tagged_noun_t noun) {
+  if (NOUN_IS_SATOM(noun))
     return satom_type;
-  else {
-    base_t *base = (base_t *)NOUN_RAW_PTR(noun.ptr);
-    // A cell can't point to itself. This distinguishes a batom from a cell.
-    return ((base_t *)base->left) == base ? batom_type : cell_type;
-  }
+  else if (NOUN_IS_CELL(noun))
+    return cell_type;
+  else
+    return batom_type;
 }
 
 static inline satom_t
-noun_as_satom(fat_noun_t noun) {
+noun_as_satom(tagged_noun_t noun) {
   ASSERT0(noun_get_type(noun) == satom_type);
-  return (satom_t)noun.ptr;
+  return NOUN_AS_SATOM(noun);
 }
 
-static inline fat_noun_t
+static inline tagged_noun_t
 satom_as_noun(satom_t satom) {
-  return (fat_noun_t){ .ptr = (noun_t *)satom, .flags = NOUN_SATOM_FLAG };
+  return SATOM_AS_NOUN(satom);
 }
 
 static inline batom_t *
-noun_as_batom(fat_noun_t noun) {
+noun_as_batom(tagged_noun_t noun) {
   ASSERT0(noun_get_type(noun) == batom_type);
-  return (batom_t *)NOUN_RAW_PTR(noun.ptr);
+  return NOUN_AS_BATOM(noun);
 }
 
 static inline cell_t *
-noun_as_cell(fat_noun_t noun) {
+noun_as_cell(tagged_noun_t noun) {
   ASSERT0(noun_get_type(noun) == cell_type);
-  return (cell_t *)NOUN_RAW_PTR(noun.ptr);
+  return NOUN_AS_CELL(noun);
 }
 
-static inline fat_noun_t
-noun_get_left(fat_noun_t noun) {
+static inline tagged_noun_t
+noun_get_left(tagged_noun_t noun) {
   ASSERT0(noun_get_type(noun) == cell_type);
-  return (fat_noun_t){ .ptr = ((cell_t *)NOUN_RAW_PTR(noun.ptr))->base.left,
+#if FAT_NOUNS
+  return (tagged_noun_t){ .ptr = ((cell_t *)NOUN_RAW_PTR(noun.ptr))->base.left,
       .flags = NOUN_IS_LEFT_SATOM(noun.ptr) ? NOUN_SATOM_FLAG : 0
       };
+#else
+  return noun_as_cell(noun)->base.left;
+#endif
 }
 
-static inline fat_noun_t
-noun_get_right(fat_noun_t noun) {
+static inline tagged_noun_t
+noun_get_right(tagged_noun_t noun) {
   ASSERT0(noun_get_type(noun) == cell_type);
-  return (fat_noun_t){ 
+#if FAT_NOUNS
+  return (tagged_noun_t){ 
     .ptr = ((cell_t *)NOUN_RAW_PTR(noun.ptr))->right,
       .flags = NOUN_IS_RIGHT_SATOM(noun.ptr) ? NOUN_SATOM_FLAG : 0
       };
+#else
+  return noun_as_cell(noun)->right;
+#endif
 }
 
-fat_noun_t cell_set_left(fat_noun_t noun, fat_noun_t left, struct heap *heap);
+tagged_noun_t cell_set_left(tagged_noun_t noun, tagged_noun_t left, struct heap *heap);
 
-fat_noun_t cell_set_right(fat_noun_t noun, fat_noun_t left, struct heap *heap);
+tagged_noun_t cell_set_right(tagged_noun_t noun, tagged_noun_t left, struct heap *heap);
 
-void noun_print(FILE *file, fat_noun_t noun, bool brackets);
+void noun_print(FILE *file, tagged_noun_t noun, bool brackets);
 
 const char *noun_type_to_string(enum noun_type noun_type);
 
-fat_noun_t cell_new(struct heap *heap, fat_noun_t left, fat_noun_t right);
+tagged_noun_t cell_new(struct heap *heap, tagged_noun_t left, tagged_noun_t right);
 
-bool noun_is_valid_atom(fat_noun_t noun, struct heap *heap);
+bool noun_is_valid_atom(tagged_noun_t noun, struct heap *heap);
 
-fat_noun_t atom_add(fat_noun_t n1, fat_noun_t n2, struct heap *heap);
+tagged_noun_t atom_add(tagged_noun_t n1, tagged_noun_t n2, struct heap *heap);
 
-bool atom_equals(fat_noun_t a, fat_noun_t b);
+bool atom_equals(tagged_noun_t a, tagged_noun_t b);
 
-fat_noun_t atom_increment(fat_noun_t noun, struct heap *heap);
+tagged_noun_t atom_increment(tagged_noun_t noun, struct heap *heap);
 
-fat_noun_t batom_new(struct heap *heap, mpz_t val, bool clear);
+tagged_noun_t batom_new(struct heap *heap, mpz_t val, bool clear);
 
-fat_noun_t batom_new_ui(struct heap *heap, unsigned long val);
+tagged_noun_t batom_new_ui(struct heap *heap, unsigned long val);
 
 #if ALLOC_DEBUG
-fat_noun_t noun_share(fat_noun_t noun, struct heap *heap, base_t *owner);
+tagged_noun_t noun_share(tagged_noun_t noun, struct heap *heap, base_t *owner);
 
-void noun_unshare(fat_noun_t noun, struct heap *heap, bool toplevel, base_t *owner);
+void noun_unshare(tagged_noun_t noun, struct heap *heap, bool toplevel, base_t *owner);
 #else
-fat_noun_t noun_share(fat_noun_t noun, struct heap *heap);
+tagged_noun_t noun_share(tagged_noun_t noun, struct heap *heap);
 
-void noun_unshare(fat_noun_t noun, struct heap *heap, bool toplevel);
+void noun_unshare(tagged_noun_t noun, struct heap *heap, bool toplevel);
 #endif
 
 } /* extern "C" */

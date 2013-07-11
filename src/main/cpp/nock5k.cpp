@@ -690,8 +690,13 @@ atom_add(tagged_noun_t n1, tagged_noun_t n2, heap_t *heap) {
     satom_t sn1 = noun_as_satom(n1);
     satom_t sn2 = noun_as_satom(n2);
     satom_t sum = sn1 + sn2;
+#if FAT_NOUNS
     if (sum >= sn1 && sum >= sn2)
       return satom_as_noun(sum);
+#else
+    if (sum & SATOM_OVERLOW_BIT)
+      return satom_as_noun(sum);
+#endif
   }
 
   tagged_noun_t sum;
@@ -1559,9 +1564,9 @@ static void nock5k_run(int n_inputs, infile_t *inputs, bool trace_flag, bool int
 
     machine_set(&machine);
 
-    if (false) { //QQQ
-      // void jit_fib(tagged_noun_t args); jit_fib(satom_as_noun(200));
-      void jit_dec(tagged_noun_t args); jit_dec(satom_as_noun(400000));
+    if (true) { //QQQ
+      void jit_fib(tagged_noun_t args); jit_fib(satom_as_noun(200));
+      // void jit_dec(tagged_noun_t args); jit_dec(satom_as_noun(400000));
     } else {
     bool eof = false;
     do {

@@ -135,7 +135,6 @@ typedef struct machine {
 #define NOUN_IS_SATOM(noun) (((noun).flags & NOUN_SATOM_FLAG) == NOUN_SATOM_FLAG)
 #define NOUN_IS_BATOM(noun) (((base_t *)((NOUN_AS_BASE(noun))->left)) == NOUN_AS_BASE(noun))
 #define NOUN_IS_CELL(noun) (((base_t *)((NOUN_AS_BASE(noun))->left)) != NOUN_AS_BASE(noun))
-#define _UNDEFINED ((tagged_noun_t){ .ptr = (noun_t *)0, .flags = 0 })
 #define CELL_REF_NULL NULL
 #define SATOM_MAX ((satom_t)SATOM_T_MAX)
 #else /* !FAT_NOUNS */
@@ -152,11 +151,12 @@ typedef struct machine {
 #define NOUN_IS_SATOM(noun) ((((noun) & NOUN_NOT_SATOM_FLAG)) == 0)
 #define NOUN_IS_CELL(noun) ((((noun) & (NOUN_NOT_SATOM_FLAG | NOUN_CELL_FLAG))) == (NOUN_NOT_SATOM_FLAG | NOUN_CELL_FLAG))
 #define NOUN_IS_BATOM(noun) ((((noun) & (NOUN_NOT_SATOM_FLAG | NOUN_CELL_FLAG))) == NOUN_NOT_SATOM_FLAG)
-#define _UNDEFINED ((tagged_noun_t)~0)
 #define CELL_REF_NULL ((cell_ref_t)0)
 #define SATOM_MAX (((satom_t)SATOM_T_MAX)>>1)
+#define SATOM_OVERLOW_BIT (((satom_t)1)<<(sizeof(satom_t)*8-1))
 #endif /* !FAT_NOUNS */
 
+#define _UNDEFINED BATOM_AS_NOUN(NULL)
 #define NOUN_AS_CELL(noun) ((cell_t *)NOUN_AS_BASE(noun))
 #define NOUN_AS_BATOM(noun) ((batom_t *)NOUN_AS_BASE(noun))
 #define NOUN_IS_UNDEFINED(noun) NOUN_EQUALS(noun, _UNDEFINED)

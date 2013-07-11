@@ -23,12 +23,19 @@ add(tagged_noun_t n1, tagged_noun_t n2) {
   ASSERT(noun_is_valid_atom(n1, machine->heap), "noun_is_valid_atom(n1, machine->heap)\n");
   ASSERT(noun_is_valid_atom(n2, machine->heap), "noun_is_valid_atom(n2, machine->heap)\n");
 
+  // For JIT, use: http://llvm.org/docs/LangRef.html#llvm-uadd-with-overflow-intrinsics
+
   if (NOUN_IS_SATOM(n1) && NOUN_IS_SATOM(n2)) {
     satom_t sn1 = noun_as_satom(n1);
     satom_t sn2 = noun_as_satom(n2);
     satom_t sum = sn1 + sn2;
+#if FAT_NOUNS
     if (sum >= sn1 && sum >= sn2)
       return satom_as_noun(sum);
+#else
+    if (sum & SATOM_OVERLOW_BIT)
+      return satom_as_noun(sum);
+#endif
   }
 
   return atom_add(n1, n2, machine->heap);
@@ -251,6 +258,7 @@ env_t *env_new() {
   SHARE(env->local_variable_index_map, ENV_OWNER);
 
   env->current_stack_index = -1;
+  env->args_root = _UNDEFINED;
 
   return env;
 }

@@ -4,31 +4,40 @@
 
 # /opt/local/libexec/llvm-3.3/bin
 
-LLVM_CC_FLAGS = `llvm-config --cflags`
-LLVM_LINK_FLAGS = `llvm-config --libs --cflags --ldflags core analysis executionengine jit interpreter native`
-SRC = src/main/cpp
+SRC = src/main/c
 ifeq ($(origin FAST), undefined)
-  OPT = -g
-  PRODUCTION = false
+  OPT = -O0 -g
+  NOCK_PRODUCTION = false
 else
   OPT = -O4
-  PRODUCTION = true
+  NOCK_PRODUCTION = true
+endif
+ifeq ($(origin LLVM), undefined)
+  NOCK_LLVM = false
+  LLVM_CC_FLAGS = 
+  LLVM_LINK_FLAGS = 
+else
+  NOCK_LLVM = true
+  LLVM_CC_FLAGS = `llvm-config --cflags`
+  LLVM_LINK_FLAGS = `llvm-config --libs --cflags --ldflags core analysis executionengine jit interpreter native`
 endif
 
-nock5k: build_dir ${SRC}/nock5k.cpp
-	c++ -DPRODUCTION=${PRODUCTION} -DNOCK_LLVM=false -I${SRC} ${OPT} ${SRC}/nock5k.cpp ${SRC}/lib.cpp -lprofiler -lgmp -o build/bin/nock5k
+# -lprofiler 
 
-nock5k-llvm: build_dir ${SRC}/nock5k.cpp ${SRC}/lib.cpp
-	c++ -DPRODUCTION=${PRODUCTION} -DNOCK_LLVM=true ${LLVM_CC_FLAGS} -I${SRC} ${OPT} ${SRC}/nock5k.cpp ${SRC}/lib.cpp -lprofiler -lgmp ${LLVM_LINK_FLAGS} -o build/bin/nock5k
+nock5k: nock5k.o jit.o
+	$(CXX) -lgmp ${LLVM_LINK_FLAGS} ${OPT} -o build/bin/nock5k build/bin/nock5k.o build/bin/jit.o
 
-nock5k.s: build_dir ${SRC}/nock5k.cpp
-	c++ -DPRODUCTION=${PRODUCTION} -DNOCK_LLVM=false -I${SRC} ${OPT} -S -emit-llvm ${SRC}/nock5k.cpp -o build/nock5k.s
+nock5k.o: build_dir ${SRC}/nock5k.c
+	$(CC) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${SRC} -c ${SRC}/nock5k.c -o build/bin/nock5k.o
 
-nock5k.i: build_dir ${SRC}/nock5k.cpp
-	c++ -DPRODUCTION=${PRODUCTION} -DNOCK_LLVM=false -I${SRC} -E ${SRC}/nock5k.cpp -o build/nock5k.i
+nock5k.i: build_dir ${SRC}/nock5k.c
+	$(CC) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${SRC} -E ${SRC}/nock5k.c -o build/bin/nock5k.i
 
-lib.s: build_dir ${SRC}/lib.cpp
-	c++ -DPRODUCTION=${PRODUCTION} -DNOCK_LLVM=false -I${SRC} ${OPT} -S -emit-llvm ${SRC}/lib.cpp -o build/lib.s
+jit.o: build_dir ${SRC}/jit.c
+	$(CC) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${SRC} -c ${SRC}/jit.c -o build/bin/jit.o
+
+jit.i: build_dir ${SRC}/jit.c
+	$(CC) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${SRC} -E ${SRC}/jit.c -o build/bin/jit.i
 
 build_dir:
 	mkdir -p build/bin

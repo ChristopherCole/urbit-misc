@@ -13,15 +13,6 @@
 
 #include "nock5k.h"
 
-#include <stack>
-#include <string>
-
-#if NOCK_LLVM
-#include <llvm-c/ExecutionEngine.h>
-#include <llvm-c/Target.h>
-#include <llvm-c/Transforms/Scalar.h>
-#endif
-
 #if ALLOC_DEBUG
 /* When doing allocation debugging we need ownership information: */
 #define SHARE(noun, o) noun_share(noun, heap, o)
@@ -64,6 +55,47 @@ usage(const char *format, ...) {
 
   fprintf(stderr, "%s", "Usage: nock5k [options] [<file1> <file2> ...]\n\n  --enable-tracing\n        turn tracing on\n  --disable-tracing\n        turn tracing off\n  --help\n        prints this usage text\n  <file1> <file2> ...\n        files to interpret (use \"-\" for standard input)\n");
   exit(1);
+}
+
+void vec_init(vec_t *vec, size_t elem_size, size_t elem_capacity) {
+  vec->elem_size = elem_size;
+  vec->elem_capacity = elem_capacity;
+
+  if (elem_capacity > 0)
+    vec->elems = (char *)calloc(elem_capacity, elem_size);
+}
+
+vec_t *vec_new(size_t elem_size, size_t elem_capacity) {
+  vec_t *vec = (vec_t *)calloc(1, sizeof(vec_t));
+
+  vec_init(vec, elem_size, elem_capacity);
+
+  return vec;
+}
+
+void vec_destroy(vec_t *vec) {
+  if (vec->elems != NULL) free(vec->elems);
+}
+
+void vec_delete(vec_t *vec) {
+  vec_delete(vec);
+  free(vec);
+}
+
+void vec_resize(vec_t *vec, size_t new_elem_count, void *elem) {
+  while (vec->elem_count < new_elem_count)
+    vec_push(vec, elem);
+  vec->elem_count = new_elem_count;
+}
+
+void vec_expand(vec_t *vec) {
+  if (vec->elem_capacity == 0) {
+    vec->elem_capacity = 1;
+    vec->elems = (char *)calloc(vec->elem_capacity, vec->elem_size);    
+  } else {
+    vec->elem_capacity *= 2;
+    vec->elems = (char *)realloc(vec->elems, vec->elem_capacity * vec->elem_size);
+  }
 }
 
 typedef struct {
@@ -651,14 +683,11 @@ atom_increment(tagged_noun_t noun, heap_t *heap) {
       return satom_as_noun(satom + 1);
     else {
       noun = batom_new_ui(heap, SATOM_MAX);
-      goto unshared;
     }
+  } else {
+    if (noun_is_shared(noun, heap))
+      noun = batom_copy(noun, heap);
   }
-  
-  if (noun_is_shared(noun, heap))
-    noun = batom_copy(noun, heap);
-
- unshared:
 
   batom_t *batom = noun_as_batom(noun);
   mpz_add_ui(batom->val, batom->val, 1);
@@ -977,68 +1006,75 @@ stack_pop(fstack_t *stack, bool unshare, heap_t *heap) {
 static tagged_noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
   heap_t *heap = machine->heap;
   // REVISIT: replace STL uses with small C classes?
-  std::string token;
-  std::stack<tagged_noun_t> stack;
+  vec_t token;
+  vec_init(&token, sizeof(char), 1);
+  vec_t stack;
+  vec_init(&stack, sizeof(tagged_noun_t), 1);
   int row = 1;
   int column = 1;
-  std::stack<int> count;
+  vec_t count;
+  vec_init(&count, sizeof(int), 1);
   bool started = false;
 
   while (true) {
     int c = fgetc(input->file);
     if (c == EOF) {
       *eof = true;
-      if (token.size() > 0) {
-	stack.push(atom_new(heap, token.c_str()));
-	if (count.size() == 0) {
+      if (vec_size(&token) > 0) {
+	char nul = 0;
+	vec_push(&token, &nul);
+	satom_t atom = atom_new(heap, vec_get(&token, 0));
+	vec_push(&stack, &atom);
+	vec_clear(&token);
+	if (vec_size(&count) == 0) {
 	  fprintf(stderr, "Parse error: raw atom\n");
 	  exit(4); // TODO: recover instead of exit
 	}
-	++count.top();
-	token.clear();
+	int n = (*(int *)vec_get_top(&count)) + 1;
+	vec_set_top(&count, &n);
       }
       if (!started) return _UNDEFINED;
-      if (stack.size() != 1) {
+      if (vec_size(&stack) != 1) {
 	fprintf(stderr, "Parse error: unclosed '['\n");
 	exit(4); // TODO: recover instead of exit
       }
-      if (count.size() > 0) {
+      if (vec_size(&count) > 0) {
 	fprintf(stderr, "Parse error: unclosed '['\n");
 	exit(4); // TODO: recover instead of exit
       }
       break;
     }
-    if (token.size() == 0) {
+    if (vec_size(&token) == 0) {
   redo:
       if (c == '[') {
 	started = true;
-	count.push(0);
+	int n = 0;
+	vec_push(&count, &n);
       } else if (c == ']') {
 	started = true;
-	if (count.size() == 0) {
+	if (vec_size(&count) == 0) {
 	  fprintf(stderr, "Parse error: unmatched ']' at column %d\n", column);
 	  exit(4); // TODO: recover instead of exit
 	}
-	if (stack.size() < 2) {
-	  fprintf(stderr, "Parse error: too few atoms (%d) in a cell at column %d\n", count.top(), column);
+	if (vec_size(&stack) < 2) {
+	  fprintf(stderr, "Parse error: too few atoms (%d) in a cell at column %d\n", *(int *)vec_get_top(&count), column);
 	  exit(4); // TODO: recover instead of exit
 	}
-	for (int i = 1; i < count.top(); ++i) {
-	  tagged_noun_t right = stack.top();
-	  stack.pop();
-	  tagged_noun_t left = stack.top();
-	  stack.pop();
-	  stack.push(cell_new(heap, left, right));
+	for (int i = 1; i < *(int*)vec_get_top(&count); ++i) {
+	  tagged_noun_t right = *(tagged_noun_t *)vec_pop(&stack);
+	  tagged_noun_t left = *(tagged_noun_t *)vec_pop(&stack);
+	  tagged_noun_t cell = cell_new(heap, left, right);
+	  vec_push(&stack, &cell);
 	}
-	count.pop();
-	if (count.size() > 0)
-	  ++count.top();
-	if (stack.size() == 1 && count.size() == 0) {
-	  return stack.top();
+	vec_pop(&count);
+	if (vec_size(&count) > 0)
+	  ++(*(int *)vec_get_top(&count));
+	if (vec_size(&stack) == 1 && vec_size(&count) == 0) {
+	  return *(tagged_noun_t *)vec_get_top(&stack);
 	}
       } else if (c >= '0' && c <= '9') {
 	started = true;
-	token.push_back((char)c);
+	vec_push(&token, &c);
       } else if (c == '\n' || c == '\r' || c == ' ' || c == '\t') {
 	if (c == '\n') {
 	  ++row;
@@ -1055,18 +1091,21 @@ static tagged_noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
 	  ++row;
 	  column = 1;
 	}
-	if (token.size() > 0) {
-	  stack.push(atom_new(heap, token.c_str()));
-	  if (count.size() == 0) {
+	if (vec_size(&token) > 0) {
+	  char nul = 0;
+	  vec_push(&token, &nul);
+	  tagged_noun_t atom = atom_new(heap, vec_get(&token, 0));
+	  vec_clear(&token);
+	  vec_push(&stack, &atom);
+	  if (vec_size(&count) == 0) {
 	    fprintf(stderr, "Parse error: raw atom\n");
 	    exit(4); // TODO: recover instead of exit
 	  }
-	  ++count.top();
-	  token.clear();
+	  ++(*(int *)vec_get_top(&count));
 	}
 	goto redo;
       } else if (c >= '0' && c <= '9') {
-	token.push_back((char)c);
+	vec_push(&token, &c);
       } else {
 	fprintf(stderr, "Parse error: unexpected character '%c' at column %d\n", c, column);
 	exit(4); // TODO: recover instead of exit
@@ -1076,7 +1115,7 @@ static tagged_noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
     ++column;
   }
 
-  return stack.top();
+  return *(tagged_noun_t *)vec_get_top(&stack);
 }
 
 static void cite(FILE *file, int line, const char *suffix) {
@@ -1502,45 +1541,6 @@ static void free_atoms(heap_t *heap) {
 #endif
 }
 
-#if NOCK_LLVM
-static void llvm_init(llvm_t *llvm, const char *module_name) {
-  llvm->module = LLVMModuleCreateWithName(module_name);
-  llvm->builder = LLVMCreateBuilder();
-    
-  // Create execution engine.
-  char *msg;
-  if (LLVMCreateExecutionEngineForModule(&(llvm->engine), llvm->module, &msg) == 1) {
-    fprintf(stderr, "%s\n", msg);
-    LLVMDisposeMessage(msg);
-    exit(5);
-  }
-    
-  // Setup optimizations.
-  llvm->pass_manager =  LLVMCreateFunctionPassManagerForModule(llvm->module);
-
-  LLVMAddTargetData(LLVMGetExecutionEngineTargetData(llvm->engine), llvm->pass_manager); /* ok */
-  LLVMAddPromoteMemoryToRegisterPass(llvm->pass_manager); /* ok */
-  LLVMAddInstructionCombiningPass(llvm->pass_manager); /* ok */
-  LLVMAddReassociatePass(llvm->pass_manager); /* ok */
-  LLVMAddGVNPass(llvm->pass_manager); /* ok */
-  LLVMAddCFGSimplificationPass(llvm->pass_manager); /* ok */
-  LLVMInitializeFunctionPassManager(llvm->pass_manager); /* check this */
-
-  // TODO: check against the above:
-  // // Provide basic AliasAnalysis support for GVN.
-  // OurFPM.add(createBasicAliasAnalysisPass()); /* check this */
-}
-#endif
-
-#if NOCK_LLVM
-static void llvm_destroy(llvm_t *llvm) {
-  LLVMDumpModule(llvm->module);
-  LLVMDisposePassManager(llvm->pass_manager);
-  LLVMDisposeBuilder(llvm->builder);
-  LLVMDisposeModule(llvm->module);
-}
-#endif
-
 static void nock5k_run(int n_inputs, infile_t *inputs, bool trace_flag, bool interactive_flag, const char *module_name) {
   for (int i = 0; i < n_inputs; ++i) {
     infile_t *input = inputs + i;
@@ -1557,7 +1557,7 @@ static void nock5k_run(int n_inputs, infile_t *inputs, bool trace_flag, bool int
     alloc_atoms(machine.heap);
     machine.stack = stack_new(1);
 #if NOCK_LLVM
-    llvm_init(&(machine.llvm), module_name);
+    machine.llvm = llvm_new(module_name);
 #endif
     machine.file = stdout;
     machine.trace_flag = trace_flag;
@@ -1565,15 +1565,14 @@ static void nock5k_run(int n_inputs, infile_t *inputs, bool trace_flag, bool int
     machine_set(&machine);
 
     if (true) { //QQQ
-      void jit_fib(tagged_noun_t args); jit_fib(satom_as_noun(200));
-      // void jit_dec(tagged_noun_t args); jit_dec(satom_as_noun(400000));
+      void jit(tagged_noun_t args); jit(satom_as_noun(200));
     } else {
     bool eof = false;
     do {
       // TODO: use readline (or editline)
       if (interactive_flag) printf("> ");
       tagged_noun_t top = parse(&machine, input, &eof);
-      if (!NOUN_IS_UNDEFINED(top)) {
+      if (NOUN_IS_DEFINED(top)) {
 	noun_print(stdout, nock5k_run_impl(&machine, nock_op, top), true); printf("\n");
       }
     } while (interactive_flag && !eof);
@@ -1590,7 +1589,7 @@ static void nock5k_run(int n_inputs, infile_t *inputs, bool trace_flag, bool int
     printf("ops=%lu\n", machine.ops);
 #endif
 #if NOCK_LLVM
-    llvm_destroy(&(machine.llvm));
+    llvm_delete(machine.llvm);
 #endif
     heap_free(machine.heap);
     stack_free(machine.stack);
@@ -1608,8 +1607,7 @@ main(int argc, const char *argv[]) {
   mpz_set_ui(SATOM_MAX_MPZ, SATOM_MAX);
 
 #if NOCK_LLVM
-  LLVMInitializeNativeTarget();
-  LLVMLinkInJIT();
+  llvm_init_global();
 #endif
 
   // REVISIT: use getopt?

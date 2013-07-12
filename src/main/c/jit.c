@@ -3,16 +3,98 @@
  */
 
 #include <stdlib.h>
-#include <gmp.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdbool.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <inttypes.h>
+
+#if NOCK_LLVM
+/* REVISIT: these *must* come before the inclusion of nock5k.h: figure
+ * out why. */
+#include <llvm-c/ExecutionEngine.h>
+#include <llvm-c/Target.h>
+#include <llvm-c/Transforms/Scalar.h>
+#include <llvm-c/Core.h>
+#include <llvm-c/Analysis.h>
+#endif
 
 #include "nock5k.h"
 
-#include <vector>
-
-#define ENV_CHECK_VOID(p, msg) do { const char *pstr = #p; if (!(p)) { env_fail(env, pstr, msg, __FILE__, __FUNCTION__, __LINE__); return; } } while(false)
-#define ENV_CHECK(p, msg, val) do { const char *pstr = #p; if (!(p)) { env_fail(env, pstr, msg, __FILE__, __FUNCTION__, __LINE__); return val; } } while(false)
+#define ENV_FAIL(pstr, msg) env_fail(env, pstr, msg, __FILE__, __FUNCTION__, __LINE__);
+#define ENV_CHECK_VOID(p, msg) do { const char *pstr = #p; if (!(p)) { ENV_FAIL(pstr, msg); return; } } while(false)
+#define ENV_CHECK(p, msg, val) do { const char *pstr = #p; if (!(p)) { ENV_FAIL(pstr, msg) return val; } } while(false)
+#define ALLOC(t) ((t *)calloc(1, sizeof(t)))
 
 __thread machine_t *machine;
+
+#if NOCK_LLVM
+typedef struct llvm_s {
+  LLVMModuleRef module;
+  LLVMBuilderRef builder;
+  LLVMExecutionEngineRef engine;
+  LLVMPassManagerRef pass_manager;
+} llvm_t;
+#endif
+
+#if NOCK_LLVM
+void llvm_init_global() {
+  char *msg;
+
+  if (LLVMInitializeNativeTarget() == 1) {
+    ERROR0("Could not initialize LLVM native target\n");
+    exit(5);
+  }
+  LLVMLinkInJIT();
+}
+#endif
+
+#if NOCK_LLVM
+llvm_t *llvm_new(const char *module_name) {
+  llvm_t *llvm = ALLOC(llvm_t);
+  char *msg;
+
+  llvm->module = LLVMModuleCreateWithName(module_name);
+  llvm->builder = LLVMCreateBuilder();
+    
+  LLVMInitializeNativeTarget();
+  LLVMLinkInJIT();
+
+  // Create execution engine.
+  if (LLVMCreateExecutionEngineForModule(&(llvm->engine), llvm->module, &msg) == 1) {
+    fprintf(stderr, "%s\n", msg);//ZZZ
+    LLVMDisposeMessage(msg);
+    exit(5);
+  }
+    
+  // Setup optimizations.
+  llvm->pass_manager =  LLVMCreateFunctionPassManagerForModule(llvm->module);
+
+  LLVMAddTargetData(LLVMGetExecutionEngineTargetData(llvm->engine), llvm->pass_manager); /* ok */
+  LLVMAddPromoteMemoryToRegisterPass(llvm->pass_manager); /* ok */
+  LLVMAddInstructionCombiningPass(llvm->pass_manager); /* ok */
+  LLVMAddReassociatePass(llvm->pass_manager); /* ok */
+  LLVMAddGVNPass(llvm->pass_manager); /* ok */
+  LLVMAddCFGSimplificationPass(llvm->pass_manager); /* ok */
+  LLVMInitializeFunctionPassManager(llvm->pass_manager); /* check this */
+
+  // TODO: check against the above:
+  // // Provide basic AliasAnalysis support for GVN.
+  // OurFPM.add(createBasicAliasAnalysisPass()); /* check this */
+
+  return llvm;
+}
+#endif
+
+#if NOCK_LLVM
+void llvm_delete(llvm_t *llvm) {
+  LLVMDumpModule(llvm->module);
+  LLVMDisposePassManager(llvm->pass_manager);
+  LLVMDisposeBuilder(llvm->builder);
+  LLVMDisposeModule(llvm->module);
+}
+#endif
 
 void machine_set(machine_t *m) {
   machine = m;
@@ -84,7 +166,6 @@ fib(tagged_noun_t n) {
   }
 }
 
-#define ALLOC(t) ((t *)calloc(1, sizeof(t)))
 #define _YES _0
 #define _NO _1
 #if ALLOC_DEBUG
@@ -111,9 +192,9 @@ typedef uint32_t jit_index_t;
 
 typedef struct {
   // REVISIT: replace STL uses with small C classes?
-  std::vector<tagged_noun_t> locals;
-  std::vector<tagged_noun_t> next_locals;
-  std::vector<tagged_noun_t> stack;
+  vec_t locals;
+  vec_t next_locals;
+  vec_t stack;
   // Needed at function entry:
   tagged_noun_t args_root;
   // Only needed during prep (except for asserts):
@@ -123,25 +204,30 @@ typedef struct {
   jit_index_t next_local_variable_index;
   jit_index_t current_stack_index;
   jit_index_t max_stack_index;
+  // Needed during compilation:
+#if NOCK_LLVM
+  LLVMValueRef function;
+  void *fp;
+#endif
   // Failure information:
   bool failed;
   const char *predicate;
   const char *failure_message;
-  const char *file;
-  const char *function;
+  const char *file_name;
+  const char *function_name;
   int line_number;
 } env_t;
 
 static void
-env_fail(env_t *env, const char *predicate, const char *failure_message, const char *file, const char *function, int line_number) {
+env_fail(env_t *env, const char *predicate, const char *failure_message, const char *file_name, const char *function_name, int line_number) {
   env->failed = true;
   env->predicate = predicate;
   env->failure_message = failure_message;
-  env->file = file;
-  env->function = function;
+  env->file_name = file_name;
+  env->function_name = function_name;
   env->line_number = line_number;
 
-  nock_log(ERROR_PREFIX " Failure to compile: predicate = '%s', message = '%s', file = '%s', function = '%s', line = %d\n", predicate, failure_message, file, function, line_number);
+  nock_log(ERROR_PREFIX " Failure to compile: predicate = '%s', message = '%s', file = '%s', function = '%s', line = %d\n", predicate, failure_message, file_name, function_name, line_number);
 }
 
 static jit_index_t env_allocate_local(env_t *env) {
@@ -150,8 +236,9 @@ static jit_index_t env_allocate_local(env_t *env) {
   ENV_CHECK(env->next_local_variable_index < JIT_INDEX_MAX, "Too many local variable declarations", 0);
   int index = env->next_local_variable_index++;
 
-  env->locals.resize(index + 1, _UNDEFINED);
-  env->next_locals.resize(index + 1, _UNDEFINED);
+  tagged_noun_t undef = _UNDEFINED;
+  vec_resize(&env->locals, index + 1, &undef);
+  vec_resize(&env->next_locals, index + 1, &undef);
 
   return index;
 }
@@ -246,52 +333,14 @@ env_get_index_of_address(env_t *env, jit_address_t address) {
   return (jit_index_t)index_satom;
 }
 
-env_t *env_new() {
-  env_t *env = ALLOC(env_t);
-
-  // Use an "impossible" value as the placeholder:
-  env->args_placeholder = batom_new_ui(machine->heap, JIT_INDEX_MAX + 1UL);
-  SHARE(env->args_placeholder, ENV_OWNER);
-  env->loop_body_placeholder = batom_new_ui(machine->heap, JIT_INDEX_MAX + 2UL);
-  SHARE(env->loop_body_placeholder, ENV_OWNER);
-  env->local_variable_index_map = env->args_placeholder;
-  SHARE(env->local_variable_index_map, ENV_OWNER);
-
-  env->current_stack_index = -1;
-  env->args_root = _UNDEFINED;
-
-  return env;
-}
-
-void env_delete(env_t *env) {
-  for(std::vector<tagged_noun_t>::iterator it = env->locals.begin(); it != env->locals.end(); ++it) {
-    if (NOUN_IS_UNDEFINED(*it))
-      ENV_CHECK_VOID(!NOUN_IS_UNDEFINED(*it), "Undefined local variable");
-    else
-      UNSHARE(*it, LOCALS_OWNER);
-  }
-  env->locals.~vector();
-  for(std::vector<tagged_noun_t>::iterator it = env->next_locals.begin(); it != env->next_locals.end(); ++it) {
-    ENV_CHECK_VOID(NOUN_IS_UNDEFINED(*it), "Leaked local variable");
-  }
-  env->next_locals.~vector();
-  env->stack.~vector();
-  UNSHARE(env->args_placeholder, ENV_OWNER);
-  UNSHARE(env->loop_body_placeholder, ENV_OWNER);
-  UNSHARE(env->local_variable_index_map, ENV_OWNER);
-  if (!NOUN_IS_UNDEFINED(env->args_root))
-    UNSHARE(env->args_root, ENV_OWNER);
-  free(env);
-}
-
 /* Callers must unshare the value. */
 tagged_noun_t env_get_stack(env_t *env, jit_index_t index) {
   if (env->failed) return _UNDEFINED;
 
   ENV_CHECK(index <= env->max_stack_index, "Invalid index", _UNDEFINED);
 
-  tagged_noun_t value = env->stack[index];
-  ENV_CHECK(!NOUN_IS_UNDEFINED(value), "Undefined value", _UNDEFINED);
+  tagged_noun_t value = *(tagged_noun_t *)vec_get(&env->stack, index);
+  ENV_CHECK(NOUN_IS_DEFINED(value), "Undefined value", _UNDEFINED);
 
   return value;
 }
@@ -300,19 +349,19 @@ void env_set_stack(env_t *env, jit_index_t index, tagged_noun_t value) {
   if (env->failed) return;
 
   ENV_CHECK_VOID(index <= env->max_stack_index, "Invalid index");
-  ENV_CHECK_VOID(!NOUN_IS_UNDEFINED(value), "Undefined value");
+  ENV_CHECK_VOID(NOUN_IS_DEFINED(value), "Undefined value");
 
   SHARE(value, STACK_OWNER);
-  env->stack[index] = value;
+  vec_set(&env->stack, index, &value);
 }
 
 static tagged_noun_t env_get_local(env_t *env, jit_index_t index) {
   if (env->failed) return _UNDEFINED;
 
-  ENV_CHECK(index < env->next_locals.size(), "Invalid index", _UNDEFINED);
+  ENV_CHECK(index < vec_size(&env->locals), "Invalid index", _UNDEFINED);
 
-  tagged_noun_t value = env->locals[index];
-  ENV_CHECK(!NOUN_IS_UNDEFINED(value), "Undefined value", _UNDEFINED);
+  tagged_noun_t value = *(tagged_noun_t *)vec_get(&env->locals, index);
+  ENV_CHECK(NOUN_IS_DEFINED(value), "Undefined value", _UNDEFINED);
 
   return value;
 }
@@ -320,34 +369,44 @@ static tagged_noun_t env_get_local(env_t *env, jit_index_t index) {
 static void env_set_local(env_t *env, jit_index_t index, tagged_noun_t value) {
   if (env->failed) return;
 
-  ENV_CHECK_VOID(index < env->next_locals.size(), "Invalid index");
-  ENV_CHECK_VOID(NOUN_IS_UNDEFINED(env->next_locals[index]), "Overwritten value");
-  ENV_CHECK_VOID(!NOUN_IS_UNDEFINED(value), "Undefined value");
+  ENV_CHECK_VOID(index < vec_size(&env->next_locals), "Invalid index");
+  ENV_CHECK_VOID(NOUN_IS_UNDEFINED(*(tagged_noun_t *)vec_get(&env->next_locals, index)), "Overwritten value");
+  ENV_CHECK_VOID(NOUN_IS_DEFINED(value), "Undefined value");
 
   SHARE(value, LOCALS_OWNER);
-  env->next_locals[index] = value;
+  vec_set(&env->next_locals, index, &value);
 }
 
 static void env_initialize_local(env_t *env, jit_index_t index, tagged_noun_t value) {
   if (env->failed) return;
 
-  ENV_CHECK_VOID(index < env->locals.size(), "Invalid index");
-  ENV_CHECK_VOID(NOUN_IS_UNDEFINED(env->locals[index]), "Overwritten value");
-  ENV_CHECK_VOID(!NOUN_IS_UNDEFINED(value), "Undefined value");
+  ENV_CHECK_VOID(index < vec_size(&env->locals), "Invalid index");
+  ENV_CHECK_VOID(NOUN_IS_UNDEFINED(*(tagged_noun_t *)vec_get(&env->locals, index)), "Overwritten value");
+  ENV_CHECK_VOID(NOUN_IS_DEFINED(value), "Undefined value");
 
   SHARE(value, LOCALS_OWNER);
-  env->locals[index] = value;
+  vec_set(&env->locals, index, &value);
 }
 
 static void env_declare_loop(env_t *env) {
   ASSIGN(env->local_variable_index_map, cell_new(machine->heap, env->loop_body_placeholder, env->local_variable_index_map), ENV_OWNER);
 }
 
+#if NOCK_LLVM
+typedef LLVMValueRef compile_result_t;
+#define NULL_COMPILE_RESULT NULL
+#else
+typedef void compile_result_t;
+#define NULL_COMPILE_RESULT
+#endif
+
+struct jit_oper;
+
 typedef void (*prep_fn_t)(struct jit_oper *oper, env_t *env);
 #define PREP(oper) ((oper)->prep_fn)(oper, env)
 typedef void (*eval_fn_t)(struct jit_oper *oper, env_t *env);
 #define EVAL(oper) ((oper)->eval_fn)(oper, env)
-typedef void (*compile_fn_t)(struct jit_oper *oper, env_t *env);
+typedef compile_result_t (*compile_fn_t)(struct jit_oper *oper, env_t *env);
 #define COMPILE(oper) ((oper)->compile_fn)(oper, env)
 typedef void (*delete_fn_t)(struct jit_oper *oper);
 #define DELETE(oper) ((oper)->delete_fn)(oper)
@@ -426,15 +485,16 @@ void decl_eval(jit_oper_t *oper, env_t *env) {
 
 void decl_delete(jit_oper_t *oper) {
   jit_decl_t *decl = oper_as_decl(oper);
-  if (!NOUN_IS_UNDEFINED(decl->local_variable_index_map))
+  if (NOUN_IS_DEFINED(decl->local_variable_index_map))
     UNSHARE(decl->local_variable_index_map, AST_OWNER);
   UNSHARE(decl->local_variable_initial_values, AST_OWNER);
   DELETE(decl->inner);
   free(decl);
 }
 
-void decl_compile(jit_oper_t *oper, env_t *env) {
+compile_result_t decl_compile(jit_oper_t *oper, env_t *env) {
   //ZZZ
+  return NULL_COMPILE_RESULT;
 }
 
 jit_decl_t *decl_new(tagged_noun_t local_variable_initial_values) {
@@ -520,8 +580,9 @@ void binop_delete(jit_oper_t *oper) {
   free(binop);
 }
 
-void binop_compile(jit_oper_t *oper, env_t *env) {
+compile_result_t binop_compile(jit_oper_t *oper, env_t *env) {
   //ZZZ
+  return NULL_COMPILE_RESULT;
 }
 
 jit_binop_t *binop_new(enum binop_type type) {
@@ -588,8 +649,9 @@ void inc_delete(jit_oper_t *oper) {
   free(inc);
 }
 
-void inc_compile(jit_oper_t *oper, env_t *env) {
+compile_result_t inc_compile(jit_oper_t *oper, env_t *env) {
   //ZZZ
+  return NULL_COMPILE_RESULT;
 }
 
 jit_inc_t *inc_new() {
@@ -645,8 +707,9 @@ void load_delete(jit_oper_t *oper) {
   free(load);
 }
 
-void load_compile(jit_oper_t *oper, env_t *env) {
+compile_result_t load_compile(jit_oper_t *oper, env_t *env) {
   //ZZZ
+  return NULL_COMPILE_RESULT;
 }
 
 jit_load_t *load_new(jit_address_t address) {
@@ -701,8 +764,9 @@ void store_delete(jit_oper_t *oper) {
   free(store);
 }
 
-void store_compile(jit_oper_t *oper, env_t *env) {
+compile_result_t store_compile(jit_oper_t *oper, env_t *env) {
   //ZZZ
+  return NULL_COMPILE_RESULT;
 }
 
 jit_store_t *store_new(jit_address_t address) {
@@ -789,12 +853,13 @@ void loop_eval(jit_oper_t *oper, env_t *env) {
 	store_list = store_list->next;
       }
       // Copy the locals for the next iteration:
-      std::vector<tagged_noun_t>::iterator lit = env->next_locals.begin();
-      for(std::vector<tagged_noun_t>::iterator cit = env->locals.begin(); cit != env->locals.end(); ++cit) {
-	UNSHARE(*cit, LOCALS_OWNER);
-	*cit = *lit;
-	*lit = _UNDEFINED;
-	++lit;
+      tagged_noun_t *l_it = vec_get(&env->locals, 0);
+      tagged_noun_t *l_end = l_it + vec_size(&env->locals);
+      tagged_noun_t *nl_it = vec_get(&env->next_locals, 0);
+      for (; l_it != l_end; ++l_it, ++nl_it) {
+	UNSHARE(*l_it, LOCALS_OWNER);
+	*l_it = *nl_it;
+	*nl_it = _UNDEFINED;
       }
     }
   }
@@ -820,8 +885,9 @@ void loop_delete(jit_oper_t *oper) {
   free(loop);
 }
 
-void loop_compile(jit_oper_t *oper, env_t *env) {
+compile_result_t loop_compile(jit_oper_t *oper, env_t *env) {
   //ZZZ
+  return NULL_COMPILE_RESULT;
 }
 
 jit_loop_t *loop_new() {
@@ -874,29 +940,177 @@ static void env_initialize_args(env_t *env, tagged_noun_t args, tagged_noun_t ar
   }
 }
 
-void env_eval(env_t *env, jit_oper_t *oper, tagged_noun_t args) {
-  ENV_CHECK_VOID(NOUN_IS_UNDEFINED(args) == NOUN_IS_UNDEFINED(env->args_root), "Arguments mismatch");
+typedef tagged_noun_t (*binop_fn_t)(tagged_noun_t a, tagged_noun_t b);//ZZZ
+
+env_t *env_new() {
+  env_t *env = ALLOC(env_t);
+
+  // Use an "impossible" value as the placeholder:
+  env->args_placeholder = batom_new_ui(machine->heap, JIT_INDEX_MAX + 1UL);
+  SHARE(env->args_placeholder, ENV_OWNER);
+  env->loop_body_placeholder = batom_new_ui(machine->heap, JIT_INDEX_MAX + 2UL);
+  SHARE(env->loop_body_placeholder, ENV_OWNER);
+  env->local_variable_index_map = env->args_placeholder;
+  SHARE(env->local_variable_index_map, ENV_OWNER);
+
+  env->current_stack_index = -1;
+  env->args_root = _UNDEFINED;
+
+  vec_init(&env->locals, sizeof(tagged_noun_t), 0);
+  vec_init(&env->next_locals, sizeof(tagged_noun_t), 0);
+  vec_init(&env->stack, sizeof(tagged_noun_t), 0);
+
+  return env;
+}
+
+void env_delete(env_t *env, jit_oper_t *root) {
+  DELETE(root);
+
+  {
+    tagged_noun_t *l_it = vec_get(&env->locals, 0);
+    tagged_noun_t *l_end = l_it + vec_size(&env->locals);
+    for(; l_it != l_end; ++l_it) {
+      if (NOUN_IS_UNDEFINED(*l_it))
+	WARN0("Undefined local variable\n");
+      else
+	UNSHARE(*l_it, LOCALS_OWNER);
+    }
+  }
+  {
+    tagged_noun_t *nl_it = vec_get(&env->next_locals, 0);
+    tagged_noun_t *nl_end = nl_it + vec_size(&env->next_locals);
+    for(; nl_it != nl_end; ++nl_it) {
+      if (NOUN_IS_DEFINED(*nl_it))
+	WARN0("Leaked local variable\n");
+    }
+  }
+  UNSHARE(env->args_placeholder, ENV_OWNER);
+  UNSHARE(env->loop_body_placeholder, ENV_OWNER);
+  UNSHARE(env->local_variable_index_map, ENV_OWNER);
+  if (NOUN_IS_DEFINED(env->args_root))
+    UNSHARE(env->args_root, ENV_OWNER);
+#if NOCK_LLVM
+  if (env->function != NULL)
+    LLVMDeleteFunction(env->function);
+#endif
+  vec_destroy(&env->locals);
+  vec_destroy(&env->next_locals);
+  vec_destroy(&env->stack);
+  free(env);
+}
+
+tagged_noun_t env_eval(env_t *env, jit_oper_t *oper, tagged_noun_t args) {
+  ENV_CHECK(NOUN_IS_UNDEFINED(args) == NOUN_IS_UNDEFINED(env->args_root), "Arguments mismatch", _UNDEFINED);
 
   env_initialize_args(env, args, env->args_root);
 
+#if NOCK_LLVM
+  binop_fn_t binop_fn = (binop_fn_t)env->fp; //ZZZ
+  printf(">>> "); noun_print(stdout, (binop_fn)(satom_as_noun(1), satom_as_noun(2)), true); printf("\n");
+#endif
+
   EVAL(oper);
+
+  return env->failed ? _UNDEFINED : env_get_stack(env, 0);
 }
 
+#if NOCK_LLVM
 void env_compile(env_t *env, jit_oper_t *oper) {
-  //ZZZ
+  llvm_t *llvm = machine->llvm;
+
+  // Create argument list.
+  int arg_count = 2; //ZZZ
+  LLVMTypeRef *params = (LLVMTypeRef *)calloc(arg_count, sizeof(LLVMTypeRef));
+  for (int i = 0; i < arg_count; ++i)
+    params[i] = llvm_tagged_noun_type();
+  
+  // REVISIT: calling convention fastcc?
+  
+  // Create function type.
+  LLVMTypeRef functionType = LLVMFunctionType(llvm_tagged_noun_type(), params, arg_count, 0);
+  
+  // Create function.
+  env->function = LLVMAddFunction(llvm->module, /* anonymous */ "", functionType);
+  LLVMSetLinkage(env->function, LLVMPrivateLinkage);
+
+  // Create basic block.
+  LLVMBasicBlockRef block = LLVMAppendBasicBlock(env->function, "entry");
+  LLVMPositionBuilderAtEnd(llvm->builder, block);
+  
+  LLVMValueRef body;
+  if (false) { //QQQ
+    body = COMPILE(oper);
+
+    if (env->failed) return;
+  } else {
+    //ZZZ
+    body = LLVMBuildAdd(llvm->builder, LLVMGetParam(env->function, 0), LLVMGetParam(env->function, 1), "addtmp");
+  }
+
+  // Insert body as return value.
+  LLVMBuildRet(llvm->builder, body);
+    
+  // Verify function.
+  ENV_CHECK_VOID(!LLVMVerifyFunction(env->function, LLVMPrintMessageAction), "Invalid function");
+
+  LLVMDumpValue(env->function); //QQQ
+
+  LLVMRunFunctionPassManager(llvm->pass_manager, env->function);
+
+  env->fp = LLVMGetPointerToGlobal(llvm->engine, env->function);
 }
+#endif
 
 void env_prep(env_t *env, jit_oper_t *oper) {
   PREP(oper);
 
-  env->stack.resize(env->max_stack_index + 1, _UNDEFINED);
+  tagged_noun_t undef = _UNDEFINED;
+  vec_resize(&env->stack, env->max_stack_index + 1, &undef);
 }
 
-void jit_fib(tagged_noun_t args) {
+static jit_oper_t *dec_ast(env_t *env) {
   struct heap *heap = machine->heap;
 
-  // For testing, generate the AST that the pattern matcher *would*
-  // generate when parsing "fib" in Nock:
+  jit_decl_t *decl_counter = decl_new(_0); {
+    jit_loop_t *loop = loop_new();
+    /**/ decl_set_inner(decl_counter, loop_as_oper(loop)); {
+      jit_binop_t *eq = binop_new(binop_eq_type);
+      /**/ loop_set_test(loop, binop_as_expr(eq)); {
+	jit_load_t *eq_left = load_new(7);
+	/**/ binop_set_left(eq, load_as_expr(eq_left));
+      } {
+	jit_inc_t *eq_right = inc_new();
+	/**/ binop_set_right(eq, inc_as_expr(eq_right)); {
+	  jit_load_t *load_6 = load_new(6);
+	  /**/ inc_set_subexpr(eq_right, load_as_expr(load_6));
+	}
+      }
+    } {
+      jit_load_t *result = load_new(6);
+      /**/ loop_set_result(loop, load_as_expr(result));
+    } {
+      jit_store_t *store_6 = store_new(6);
+      /**/ loop_add_store(loop, store_6); {
+	jit_inc_t *inc_6 = inc_new();
+	/**/ store_set_subexpr(store_6, inc_as_expr(inc_6)); {
+	  jit_load_t *load_6 = load_new(6);
+	  /**/ inc_set_subexpr(inc_6, load_as_expr(load_6));
+	}
+      }
+    } {
+      jit_store_t *store_7 = store_new(7);
+      /**/ loop_add_store(loop, store_7); {
+	jit_load_t *load_7 = load_new(7);
+	/**/ store_set_subexpr(store_7, load_as_expr(load_7));
+      }
+    }
+  }
+
+  return decl_as_oper(decl_counter);
+}
+
+static jit_oper_t *fib_ast(env_t *env) {
+  struct heap *heap = machine->heap;
 
   jit_decl_t *decl_f0_f1 = decl_new(CELL(_0, _1)); {
     jit_decl_t *decl_counter = decl_new(_0);
@@ -944,83 +1158,30 @@ void jit_fib(tagged_noun_t args) {
     }
   }
 
-  env_t *env = env_new();
-
-  jit_oper_t *root = decl_as_oper(decl_f0_f1);
-
-  env_prep(env, root);
-  env_eval(env, root, args);
-
-  // QQQ
-  if (env->failed) 
-    ERROR0("Evaluation failed\n");
-  else {
-    tagged_noun_t popped;
-    printf("fib("); noun_print(stdout, args, true); printf(")="); noun_print(stdout, popped = env_get_stack(env, 0), true); printf("\n");
-    UNSHARE(popped, STACK_OWNER);
-  }
-
-  DELETE(root);
-  env_delete(env);
+  return decl_as_oper(decl_f0_f1);
 }
 
-void jit_dec(tagged_noun_t args) {
-  struct heap *heap = machine->heap;
-
+void jit(tagged_noun_t args) {
   // For testing, generate the AST that the pattern matcher *would*
-  // generate when parsing "dec" in Nock:
-
-  jit_decl_t *decl_counter = decl_new(_0); {
-    jit_loop_t *loop = loop_new();
-    /**/ decl_set_inner(decl_counter, loop_as_oper(loop)); {
-      jit_binop_t *eq = binop_new(binop_eq_type);
-      /**/ loop_set_test(loop, binop_as_expr(eq)); {
-	jit_load_t *eq_left = load_new(7);
-	/**/ binop_set_left(eq, load_as_expr(eq_left));
-      } {
-	jit_inc_t *eq_right = inc_new();
-	/**/ binop_set_right(eq, inc_as_expr(eq_right)); {
-	  jit_load_t *load_6 = load_new(6);
-	  /**/ inc_set_subexpr(eq_right, load_as_expr(load_6));
-	}
-      }
-    } {
-      jit_load_t *result = load_new(6);
-      /**/ loop_set_result(loop, load_as_expr(result));
-    } {
-      jit_store_t *store_6 = store_new(6);
-      /**/ loop_add_store(loop, store_6); {
-	jit_inc_t *inc_6 = inc_new();
-	/**/ store_set_subexpr(store_6, inc_as_expr(inc_6)); {
-	  jit_load_t *load_6 = load_new(6);
-	  /**/ inc_set_subexpr(inc_6, load_as_expr(load_6));
-	}
-      }
-    } {
-      jit_store_t *store_7 = store_new(7);
-      /**/ loop_add_store(loop, store_7); {
-	jit_load_t *load_7 = load_new(7);
-	/**/ store_set_subexpr(store_7, load_as_expr(load_7));
-      }
-    }
-  }
+  // generate when parsing "fib" in Nock:
 
   env_t *env = env_new();
-
-  jit_oper_t *root = decl_as_oper(decl_counter);
+  bool do_fib = true;
+  jit_oper_t *root = (do_fib ? fib_ast(env) : dec_ast(env));
 
   env_prep(env, root);
-  env_eval(env, root, args);
+#if NOCK_LLVM
+  env_compile(env, root);
+#endif
+  tagged_noun_t result = env_eval(env, root, args);
 
   // QQQ
   if (env->failed) 
     ERROR0("Evaluation failed\n");
   else {
-    tagged_noun_t popped;
-    printf("dec("); noun_print(stdout, args, true); printf(")="); noun_print(stdout, popped = env_get_stack(env, 0), true); printf("\n");
-    UNSHARE(popped, STACK_OWNER);
+    printf("%s(", (do_fib ? "fib" : "dec")); noun_print(stdout, args, true); printf(")="); noun_print(stdout, result, true); printf("\n");
+    UNSHARE(result, STACK_OWNER);
   }
 
-  DELETE(root);
-  env_delete(env);
+  env_delete(env, root);
 }

@@ -30,6 +30,10 @@
 #define ERROR_PREFIX "ERROR:"
 #define ERROR(f, ...) do { if (IS_ERROR) nock_log(ERROR_PREFIX " %S %s %d: " f, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); } while (false)
 #define ERROR0(s) do { if (NOCK_LOG >= NOCK_ERROR) nock_log(ERROR_PREFIX " " s); } while (false)
+#define IS_WARN (NOCK_LOG >= NOCK_WARN)
+#define WARN_PREFIX "WARN:"
+#define WARN(f, ...) do { if (IS_WARN) nock_log(WARN_PREFIX " %S %s %d: " f, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); } while (false)
+#define WARN0(s) do { if (NOCK_LOG >= NOCK_WARN) nock_log(WARN_PREFIX " " s); } while (false)
 
 /* TODO: more details on noun/atom representation */
 
@@ -40,11 +44,17 @@ static mpz_t SATOM_MAX_MPZ;
 typedef uint64_t satom_t;
 #define SATOM_FMT PRIu64
 #define SATOM_T_MAX UINT64_MAX
+#if NOCK_LLVM
+#define llvm_tagged_noun_type() LLVMInt64Type()
+#endif
 #elif UINTPTR_MAX == UINT32_MAX
 /* 32 bit pointers */
 typedef uint32_t satom_t;
 #define SATOM_FMT PRIu32
 #define SATOM_T_MAX UINT32_MAX
+#if NOCK_LLVM
+#define llvm_tagged_noun_type() LLVMInt32Type()
+#endif
 #else
 /* PDP-10, is that you? */
 #error Unsupported pointer size (require 32 or 64 bits)
@@ -89,12 +99,11 @@ enum noun_type {
 };
 
 #if NOCK_LLVM
-typedef struct {
-  LLVMModuleRef module;
-  LLVMBuilderRef builder;
-  LLVMExecutionEngineRef engine;
-  LLVMPassManagerRef pass_manager;
-} llvm_t;
+void llvm_init_global();
+
+struct llvm_s *llvm_new(const char *module_name);
+
+void llvm_delete(struct llvm_s *llvm);
 #endif
 
 struct fstack;
@@ -107,7 +116,7 @@ typedef struct machine {
   struct heap *heap;
   FILE *file;
 #if NOCK_LLVM
-  llvm_t llvm;
+  struct llvm_s *llvm;
 #endif
   bool trace_flag;
 #if NOCK_STATS
@@ -160,6 +169,7 @@ typedef struct machine {
 #define NOUN_AS_CELL(noun) ((cell_t *)NOUN_AS_BASE(noun))
 #define NOUN_AS_BATOM(noun) ((batom_t *)NOUN_AS_BASE(noun))
 #define NOUN_IS_UNDEFINED(noun) NOUN_EQUALS(noun, _UNDEFINED)
+#define NOUN_IS_DEFINED(noun) !NOUN_IS_UNDEFINED(noun)
 #define CELL(left, right) cell_new(heap, left, right)
 
 #if ALLOC_DEBUG
@@ -200,7 +210,7 @@ extern tagged_noun_t _10;
 #define _10 SATOM_AS_NOUN(10)
 #endif
 
-extern "C" {
+//ZZZ extern "C" {
 /* Sets the thread-local variable holding the pointer to the machine. */
 void machine_set(machine_t *m);
 
@@ -300,6 +310,69 @@ tagged_noun_t noun_share(tagged_noun_t noun, struct heap *heap);
 void noun_unshare(tagged_noun_t noun, struct heap *heap, bool toplevel);
 #endif
 
-} /* extern "C" */
+// ZZZ} /* extern "C" */
+
+typedef struct vec_s {
+  size_t elem_count;
+  size_t elem_size;
+  size_t elem_capacity;
+  char *elems;
+} vec_t;
+
+void vec_init(vec_t *vec, size_t elem_size, size_t elem_capacity);
+
+vec_t *vec_new(size_t elem_size, size_t elem_capacity);
+
+void vec_destroy(vec_t *vec);
+
+void vec_delete(vec_t *vec);
+
+void vec_expand(vec_t *vec);
+
+void vec_resize(vec_t *vec, size_t new_elem_count, void *elem);
+
+static inline size_t vec_size(vec_t *vec) {
+  return vec->elem_count;
+}
+
+static inline void vec_clear(vec_t *vec) {
+  vec->elem_count = 0;
+}
+
+static inline void *vec_get(vec_t *vec, size_t index) {
+  ASSERT0(index < vec->elem_count);
+  return (void *)(vec->elems + (vec->elem_size * index));
+}
+
+static inline void vec_set(vec_t *vec, size_t index, void *elem) {
+  ASSERT0(index < vec->elem_count);
+  memcpy(vec->elems + (vec->elem_size * index), elem, vec->elem_size);
+}
+
+static inline void vec_set_top(vec_t *vec, void *elem) {
+  ASSERT0(vec->elem_count > 0);
+  vec_set(vec, vec->elem_count - 1, elem);
+}
+
+static inline void vec_push(vec_t *vec, void *elem) {
+  if (vec->elem_count == vec->elem_capacity)
+    vec_expand(vec);
+  ASSERT0(vec->elem_capacity > vec->elem_count);
+
+  ++vec->elem_count;
+  vec_set_top(vec, elem);
+}
+
+static inline void *vec_get_top(vec_t *vec) {
+  ASSERT0(vec->elem_count > 0);
+  return vec_get(vec, vec->elem_count - 1);
+}
+
+static inline void *vec_pop(vec_t *vec) {
+  ASSERT0(vec->elem_count > 0);
+  void *result = vec_get_top(vec);
+  --vec->elem_count;
+  return result;
+}
 
 #endif /* #if !defined(NOCK5K_H) */

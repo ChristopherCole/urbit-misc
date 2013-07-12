@@ -4,7 +4,8 @@
 
 # /opt/local/libexec/llvm-3.3/bin
 
-SRC = src/main/c
+SRC = src
+INCLUDE = include
 ifeq ($(origin FAST), undefined)
   OPT = -O0 -g
   NOCK_PRODUCTION = false
@@ -28,16 +29,16 @@ nock5k: nock5k.o jit.o
 	$(CXX) -lgmp ${LLVM_LINK_FLAGS} ${OPT} -o build/bin/nock5k build/bin/nock5k.o build/bin/jit.o
 
 nock5k.o: build_dir ${SRC}/nock5k.c
-	$(CC) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${SRC} -c ${SRC}/nock5k.c -o build/bin/nock5k.o
+	$(CC) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/nock5k.c -o build/bin/nock5k.o
 
 nock5k.i: build_dir ${SRC}/nock5k.c
-	$(CC) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${SRC} -E ${SRC}/nock5k.c -o build/bin/nock5k.i
+	$(CC) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -E ${SRC}/nock5k.c -o build/bin/nock5k.i
 
 jit.o: build_dir ${SRC}/jit.c
-	$(CC) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${SRC} -c ${SRC}/jit.c -o build/bin/jit.o
+	$(CC) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/jit.c -o build/bin/jit.o
 
 jit.i: build_dir ${SRC}/jit.c
-	$(CC) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${SRC} -E ${SRC}/jit.c -o build/bin/jit.i
+	$(CC) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -E ${SRC}/jit.c -o build/bin/jit.i
 
 build_dir:
 	mkdir -p build/bin

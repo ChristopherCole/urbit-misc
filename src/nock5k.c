@@ -57,18 +57,15 @@ usage(const char *format, ...) {
   exit(1);
 }
 
-void vec_init(vec_t *vec, size_t elem_size, size_t elem_capacity) {
+void vec_init(vec_t *vec, size_t elem_size) {
   vec->elem_size = elem_size;
-  vec->elem_capacity = elem_capacity;
-
-  if (elem_capacity > 0)
-    vec->elems = (char *)calloc(elem_capacity, elem_size);
+  vec->elem_capacity = 0;
 }
 
-vec_t *vec_new(size_t elem_size, size_t elem_capacity) {
+vec_t *vec_new(size_t elem_size) {
   vec_t *vec = (vec_t *)calloc(1, sizeof(vec_t));
 
-  vec_init(vec, elem_size, elem_capacity);
+  vec_init(vec, elem_size);
 
   return vec;
 }
@@ -1005,15 +1002,14 @@ stack_pop(fstack_t *stack, bool unshare, heap_t *heap) {
 
 static tagged_noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
   heap_t *heap = machine->heap;
-  // REVISIT: replace STL uses with small C classes?
   vec_t token;
-  vec_init(&token, sizeof(char), 1);
+  vec_init(&token, sizeof(char));
   vec_t stack;
-  vec_init(&stack, sizeof(tagged_noun_t), 1);
+  vec_init(&stack, sizeof(tagged_noun_t));
   int row = 1;
   int column = 1;
   vec_t count;
-  vec_init(&count, sizeof(int), 1);
+  vec_init(&count, sizeof(int));
   bool started = false;
 
   while (true) {

@@ -32,7 +32,6 @@ __thread machine_t *machine;
 #if NOCK_LLVM
 typedef struct llvm_s {
   LLVMModuleRef module;
-  LLVMBuilderRef builder;
   LLVMExecutionEngineRef engine;
   LLVMPassManagerRef pass_manager;
 } llvm_t;
@@ -46,7 +45,6 @@ void llvm_init_global() {
     ERROR0("Could not initialize LLVM native target\n");
     exit(5);
   }
-  LLVMLinkInJIT();
 }
 #endif
 
@@ -56,11 +54,7 @@ llvm_t *llvm_new(const char *module_name) {
   char *msg;
 
   llvm->module = LLVMModuleCreateWithName(module_name);
-  llvm->builder = LLVMCreateBuilder();
     
-  LLVMInitializeNativeTarget();
-  LLVMLinkInJIT();
-
   // Create execution engine.
   if (LLVMCreateExecutionEngineForModule(&(llvm->engine), llvm->module, &msg) == 1) {
     fprintf(stderr, "%s\n", msg);//ZZZ
@@ -91,7 +85,6 @@ llvm_t *llvm_new(const char *module_name) {
 void llvm_delete(llvm_t *llvm) {
   LLVMDumpModule(llvm->module);
   LLVMDisposePassManager(llvm->pass_manager);
-  LLVMDisposeBuilder(llvm->builder);
   LLVMDisposeModule(llvm->module);
 }
 #endif
@@ -191,7 +184,6 @@ typedef uint32_t jit_index_t;
 #define JIT_STACK_MAX UINT16_MAX
 
 typedef struct {
-  // REVISIT: replace STL uses with small C classes?
   vec_t locals;
   vec_t next_locals;
   vec_t stack;
@@ -206,6 +198,9 @@ typedef struct {
   jit_index_t max_stack_index;
   // Needed during compilation:
 #if NOCK_LLVM
+  vec_t locals_names;
+  vec_t next_locals_names;
+  LLVMBuilderRef builder;
   LLVMValueRef function;
   void *fp;
 #endif
@@ -392,13 +387,10 @@ static void env_declare_loop(env_t *env) {
   ASSIGN(env->local_variable_index_map, cell_new(machine->heap, env->loop_body_placeholder, env->local_variable_index_map), ENV_OWNER);
 }
 
-#if NOCK_LLVM
-typedef LLVMValueRef compile_result_t;
-#define NULL_COMPILE_RESULT NULL
-#else
-typedef void compile_result_t;
-#define NULL_COMPILE_RESULT
-#endif
+static LLVMValueRef compile_alloca(env_t *env, const char *var_name) {
+  LLVMPositionBuilderBefore(env->builder, LLVMGetEntryBasicBlock(env->function));
+  return LLVMBuildAlloca(env->builder, llvm_tagged_noun_type(), var_name);
+}
 
 struct jit_oper;
 
@@ -406,8 +398,10 @@ typedef void (*prep_fn_t)(struct jit_oper *oper, env_t *env);
 #define PREP(oper) ((oper)->prep_fn)(oper, env)
 typedef void (*eval_fn_t)(struct jit_oper *oper, env_t *env);
 #define EVAL(oper) ((oper)->eval_fn)(oper, env)
-typedef compile_result_t (*compile_fn_t)(struct jit_oper *oper, env_t *env);
+#if NOCK_LLVM
+typedef LLVMValueRef (*compile_fn_t)(struct jit_oper *oper, env_t *env);
 #define COMPILE(oper) ((oper)->compile_fn)(oper, env)
+#endif
 typedef void (*delete_fn_t)(struct jit_oper *oper);
 #define DELETE(oper) ((oper)->delete_fn)(oper)
 
@@ -462,6 +456,54 @@ void decl_prep(jit_oper_t *oper, env_t *env) {
   PREP(decl->inner);
 }
 
+static char *make_var_name(const char *prefix, satom_t satom) {
+  const int n = snprintf(NULL, 0, "%s%" SATOM_FMT, prefix, satom);
+  ASSERT0(n > 0);
+  char buf[n+1];
+  int c = snprintf(buf, n+1, "%s%" SATOM_FMT, prefix, satom);
+  ASSERT0(buf[n] == '\0');
+  ASSERT0(c == n);
+  return strdup(buf);
+}
+
+#if NOCK_LLVM
+static void decl_compile_impl(env_t *env, tagged_noun_t local_variable_initial_values, tagged_noun_t local_variable_index_map) {
+  if (noun_get_type(local_variable_initial_values) == cell_type) {
+    decl_compile_impl(env, noun_get_left(local_variable_initial_values), noun_get_left(local_variable_index_map));
+    decl_compile_impl(env, noun_get_right(local_variable_initial_values), noun_get_right(local_variable_index_map));
+  } else {
+    satom_t index = noun_as_satom(local_variable_index_map);
+    ENV_CHECK_VOID(index <= JIT_INDEX_MAX, "Invalid index");
+
+    {
+      char *var_name = make_var_name("l", index);
+      vec_resize(&env->locals_names, index + 1, NULL);
+      vec_set(&env->locals_names, index, var_name);
+      LLVMValueRef value = LLVMConstInt(llvm_tagged_noun_type(), local_variable_initial_values, 0);
+      LLVMBuildStore(env->builder, value, compile_alloca(env, var_name));
+    }
+    {
+      char *var_name = make_var_name("l", index);
+      vec_resize(&env->next_locals_names, index + 1, NULL);
+      vec_set(&env->next_locals_names, index, var_name);
+      compile_alloca(env, var_name);
+    }
+  }
+}
+#endif /* NOCK_LLVM */
+
+#if NOCK_LLVM
+LLVMValueRef decl_compile(jit_oper_t *oper, env_t *env) {
+  if (env->failed) return NULL;
+
+  jit_decl_t *decl = oper_as_decl(oper);
+
+  decl_compile_impl(env, decl->local_variable_initial_values, decl->local_variable_index_map);
+
+  return COMPILE(decl->inner);
+}
+#endif /* NOCK_LLVM */
+
 static void decl_eval_impl(env_t *env, tagged_noun_t local_variable_initial_values, tagged_noun_t local_variable_index_map) {
   if (noun_get_type(local_variable_initial_values) == cell_type) {
     decl_eval_impl(env, noun_get_left(local_variable_initial_values), noun_get_left(local_variable_index_map));
@@ -490,11 +532,6 @@ void decl_delete(jit_oper_t *oper) {
   UNSHARE(decl->local_variable_initial_values, AST_OWNER);
   DELETE(decl->inner);
   free(decl);
-}
-
-compile_result_t decl_compile(jit_oper_t *oper, env_t *env) {
-  //ZZZ
-  return NULL_COMPILE_RESULT;
 }
 
 jit_decl_t *decl_new(tagged_noun_t local_variable_initial_values) {
@@ -580,10 +617,12 @@ void binop_delete(jit_oper_t *oper) {
   free(binop);
 }
 
-compile_result_t binop_compile(jit_oper_t *oper, env_t *env) {
+#if NOCK_LLVM
+LLVMValueRef binop_compile(jit_oper_t *oper, env_t *env) {
   //ZZZ
-  return NULL_COMPILE_RESULT;
+  return NULL;
 }
+#endif /* NOCK_LLVM */
 
 jit_binop_t *binop_new(enum binop_type type) {
   jit_binop_t *binop = ALLOC(jit_binop_t);
@@ -649,10 +688,12 @@ void inc_delete(jit_oper_t *oper) {
   free(inc);
 }
 
-compile_result_t inc_compile(jit_oper_t *oper, env_t *env) {
+#if NOCK_LLVM
+LLVMValueRef inc_compile(jit_oper_t *oper, env_t *env) {
   //ZZZ
-  return NULL_COMPILE_RESULT;
+  return NULL;
 }
+#endif /* NOCK_LLVM */
 
 jit_inc_t *inc_new() {
   jit_inc_t *inc = ALLOC(jit_inc_t);
@@ -707,10 +748,12 @@ void load_delete(jit_oper_t *oper) {
   free(load);
 }
 
-compile_result_t load_compile(jit_oper_t *oper, env_t *env) {
+#if NOCK_LLVM
+LLVMValueRef load_compile(jit_oper_t *oper, env_t *env) {
   //ZZZ
-  return NULL_COMPILE_RESULT;
+  return NULL;
 }
+#endif /* NOCK_LLVM */
 
 jit_load_t *load_new(jit_address_t address) {
   jit_load_t *load = ALLOC(jit_load_t);
@@ -764,10 +807,12 @@ void store_delete(jit_oper_t *oper) {
   free(store);
 }
 
-compile_result_t store_compile(jit_oper_t *oper, env_t *env) {
+#if NOCK_LLVM
+LLVMValueRef store_compile(jit_oper_t *oper, env_t *env) {
   //ZZZ
-  return NULL_COMPILE_RESULT;
+  return NULL;
 }
+#endif /* NOCK_LLVM */
 
 jit_store_t *store_new(jit_address_t address) {
   jit_store_t *store = ALLOC(jit_store_t);
@@ -885,10 +930,12 @@ void loop_delete(jit_oper_t *oper) {
   free(loop);
 }
 
-compile_result_t loop_compile(jit_oper_t *oper, env_t *env) {
+#if NOCK_LLVM
+LLVMValueRef loop_compile(jit_oper_t *oper, env_t *env) {
   //ZZZ
-  return NULL_COMPILE_RESULT;
+  return NULL;
 }
+#endif /* NOCK_LLVM */
 
 jit_loop_t *loop_new() {
   jit_loop_t *loop = ALLOC(jit_loop_t);
@@ -956,9 +1003,14 @@ env_t *env_new() {
   env->current_stack_index = -1;
   env->args_root = _UNDEFINED;
 
-  vec_init(&env->locals, sizeof(tagged_noun_t), 0);
-  vec_init(&env->next_locals, sizeof(tagged_noun_t), 0);
-  vec_init(&env->stack, sizeof(tagged_noun_t), 0);
+  vec_init(&env->locals, sizeof(tagged_noun_t));
+  vec_init(&env->next_locals, sizeof(tagged_noun_t));
+  vec_init(&env->stack, sizeof(tagged_noun_t));
+
+#if NOCK_LLVM
+  vec_init(&env->locals_names, sizeof(char *));
+  vec_init(&env->next_locals_names, sizeof(char *));
+#endif /* NOCK_LLVM */
 
   return env;
 }
@@ -992,10 +1044,35 @@ void env_delete(env_t *env, jit_oper_t *root) {
 #if NOCK_LLVM
   if (env->function != NULL)
     LLVMDeleteFunction(env->function);
+  if (env->builder != NULL)
+    LLVMDisposeBuilder(env->builder);
 #endif
+
   vec_destroy(&env->locals);
   vec_destroy(&env->next_locals);
   vec_destroy(&env->stack);
+
+#if NOCK_LLVM
+  {
+    char **ln_it = vec_get(&env->locals_names, 0);
+    char **ln_end = ln_it + vec_size(&env->locals_names);
+    for(; ln_it != ln_end; ++ln_it) {
+      if (*ln_it != NULL)
+	free(*ln_it);
+    }
+  }
+  vec_destroy(&env->locals_names);
+  {
+    char **nln_it = vec_get(&env->next_locals_names, 0);
+    char **nln_end = nln_it + vec_size(&env->next_locals_names);
+    for(; nln_it != nln_end; ++nln_it) {
+      if (*nln_it != NULL)
+	free(*nln_it);
+    }
+  }
+  vec_destroy(&env->next_locals_names);
+#endif /* NOCK_LLVM */
+
   free(env);
 }
 
@@ -1017,6 +1094,7 @@ tagged_noun_t env_eval(env_t *env, jit_oper_t *oper, tagged_noun_t args) {
 #if NOCK_LLVM
 void env_compile(env_t *env, jit_oper_t *oper) {
   llvm_t *llvm = machine->llvm;
+  env->builder = LLVMCreateBuilder();
 
   // Create argument list.
   int arg_count = 2; //ZZZ
@@ -1035,7 +1113,7 @@ void env_compile(env_t *env, jit_oper_t *oper) {
 
   // Create basic block.
   LLVMBasicBlockRef block = LLVMAppendBasicBlock(env->function, "entry");
-  LLVMPositionBuilderAtEnd(llvm->builder, block);
+  LLVMPositionBuilderAtEnd(env->builder, block);
   
   LLVMValueRef body;
   if (false) { //QQQ
@@ -1044,11 +1122,11 @@ void env_compile(env_t *env, jit_oper_t *oper) {
     if (env->failed) return;
   } else {
     //ZZZ
-    body = LLVMBuildAdd(llvm->builder, LLVMGetParam(env->function, 0), LLVMGetParam(env->function, 1), "addtmp");
+    body = LLVMBuildAdd(env->builder, LLVMGetParam(env->function, 0), LLVMGetParam(env->function, 1), "addtmp");
   }
 
   // Insert body as return value.
-  LLVMBuildRet(llvm->builder, body);
+  LLVMBuildRet(env->builder, body);
     
   // Verify function.
   ENV_CHECK_VOID(!LLVMVerifyFunction(env->function, LLVMPrintMessageAction), "Invalid function");
@@ -1059,7 +1137,7 @@ void env_compile(env_t *env, jit_oper_t *oper) {
 
   env->fp = LLVMGetPointerToGlobal(llvm->engine, env->function);
 }
-#endif
+#endif /* NOCK_LLVM */
 
 void env_prep(env_t *env, jit_oper_t *oper) {
   PREP(oper);
@@ -1166,7 +1244,7 @@ void jit(tagged_noun_t args) {
   // generate when parsing "fib" in Nock:
 
   env_t *env = env_new();
-  bool do_fib = true;
+  bool do_fib = false;
   jit_oper_t *root = (do_fib ? fib_ast(env) : dec_ast(env));
 
   env_prep(env, root);

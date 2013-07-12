@@ -319,9 +319,9 @@ typedef struct vec_s {
   char *elems;
 } vec_t;
 
-void vec_init(vec_t *vec, size_t elem_size, size_t elem_capacity);
+void vec_init(vec_t *vec, size_t elem_size);
 
-vec_t *vec_new(size_t elem_size, size_t elem_capacity);
+vec_t *vec_new(size_t elem_size);
 
 void vec_destroy(vec_t *vec);
 

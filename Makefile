@@ -35,7 +35,7 @@ nock5k.i: build_dir ${SRC}/nock5k.c
 	$(CC) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -E ${SRC}/nock5k.c -o build/bin/nock5k.i
 
 jit.o: build_dir ${SRC}/jit.c
-	$(CC) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/jit.c -o build/bin/jit.o
+	$(CXX) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/jit.c -o build/bin/jit.o
 
 jit.i: build_dir ${SRC}/jit.c
 	$(CC) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -E ${SRC}/jit.c -o build/bin/jit.i

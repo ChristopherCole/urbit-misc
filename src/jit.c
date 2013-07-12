@@ -45,6 +45,7 @@ void llvm_init_global() {
     ERROR0("Could not initialize LLVM native target\n");
     exit(5);
   }
+  LLVMLinkInJIT();
 }
 #endif
 
@@ -388,7 +389,8 @@ static void env_declare_loop(env_t *env) {
 }
 
 static LLVMValueRef compile_alloca(env_t *env, const char *var_name) {
-  LLVMPositionBuilderBefore(env->builder, LLVMGetEntryBasicBlock(env->function));
+  DEBUG("%s var_name=%s\n", __FUNCTION__, var_name);
+  LLVMPositionBuilderAtEnd(env->builder, LLVMGetEntryBasicBlock(env->function));
   return LLVMBuildAlloca(env->builder, llvm_tagged_noun_type(), var_name);
 }
 
@@ -474,18 +476,18 @@ static void decl_compile_impl(env_t *env, tagged_noun_t local_variable_initial_v
   } else {
     satom_t index = noun_as_satom(local_variable_index_map);
     ENV_CHECK_VOID(index <= JIT_INDEX_MAX, "Invalid index");
-
+    char *null = NULL;
     {
       char *var_name = make_var_name("l", index);
-      vec_resize(&env->locals_names, index + 1, NULL);
-      vec_set(&env->locals_names, index, var_name);
+      vec_resize(&env->locals_names, index + 1, &null);
+      vec_set(&env->locals_names, index, &var_name);
       LLVMValueRef value = LLVMConstInt(llvm_tagged_noun_type(), local_variable_initial_values, 0);
       LLVMBuildStore(env->builder, value, compile_alloca(env, var_name));
     }
     {
-      char *var_name = make_var_name("l", index);
-      vec_resize(&env->next_locals_names, index + 1, NULL);
-      vec_set(&env->next_locals_names, index, var_name);
+      char *var_name = make_var_name("nl", index);
+      vec_resize(&env->next_locals_names, index + 1, &null);
+      vec_set(&env->next_locals_names, index, &var_name);
       compile_alloca(env, var_name);
     }
   }
@@ -494,6 +496,8 @@ static void decl_compile_impl(env_t *env, tagged_noun_t local_variable_initial_v
 
 #if NOCK_LLVM
 LLVMValueRef decl_compile(jit_oper_t *oper, env_t *env) {
+  DEBUG("%s\n", __FUNCTION__);
+
   if (env->failed) return NULL;
 
   jit_decl_t *decl = oper_as_decl(oper);
@@ -619,6 +623,8 @@ void binop_delete(jit_oper_t *oper) {
 
 #if NOCK_LLVM
 LLVMValueRef binop_compile(jit_oper_t *oper, env_t *env) {
+  DEBUG("%s\n", __FUNCTION__);
+
   //ZZZ
   return NULL;
 }
@@ -690,6 +696,8 @@ void inc_delete(jit_oper_t *oper) {
 
 #if NOCK_LLVM
 LLVMValueRef inc_compile(jit_oper_t *oper, env_t *env) {
+  DEBUG("%s\n", __FUNCTION__);
+
   //ZZZ
   return NULL;
 }
@@ -750,6 +758,8 @@ void load_delete(jit_oper_t *oper) {
 
 #if NOCK_LLVM
 LLVMValueRef load_compile(jit_oper_t *oper, env_t *env) {
+  DEBUG("%s\n", __FUNCTION__);
+
   //ZZZ
   return NULL;
 }
@@ -809,6 +819,8 @@ void store_delete(jit_oper_t *oper) {
 
 #if NOCK_LLVM
 LLVMValueRef store_compile(jit_oper_t *oper, env_t *env) {
+  DEBUG("%s\n", __FUNCTION__);
+
   //ZZZ
   return NULL;
 }
@@ -898,9 +910,10 @@ void loop_eval(jit_oper_t *oper, env_t *env) {
 	store_list = store_list->next;
       }
       // Copy the locals for the next iteration:
-      tagged_noun_t *l_it = vec_get(&env->locals, 0);
+      // REVISIT: pass a elem_copy_fn to vec_copy
+      tagged_noun_t *l_it = (tagged_noun_t *)vec_get(&env->locals, 0);
       tagged_noun_t *l_end = l_it + vec_size(&env->locals);
-      tagged_noun_t *nl_it = vec_get(&env->next_locals, 0);
+      tagged_noun_t *nl_it = (tagged_noun_t *)vec_get(&env->next_locals, 0);
       for (; l_it != l_end; ++l_it, ++nl_it) {
 	UNSHARE(*l_it, LOCALS_OWNER);
 	*l_it = *nl_it;
@@ -932,6 +945,8 @@ void loop_delete(jit_oper_t *oper) {
 
 #if NOCK_LLVM
 LLVMValueRef loop_compile(jit_oper_t *oper, env_t *env) {
+  DEBUG("%s\n", __FUNCTION__);
+
   //ZZZ
   return NULL;
 }
@@ -1019,7 +1034,8 @@ void env_delete(env_t *env, jit_oper_t *root) {
   DELETE(root);
 
   {
-    tagged_noun_t *l_it = vec_get(&env->locals, 0);
+    // REVISIT: pass a elem_destroy_fn to vec_destroy
+    tagged_noun_t *l_it = (tagged_noun_t *)vec_get(&env->locals, 0);
     tagged_noun_t *l_end = l_it + vec_size(&env->locals);
     for(; l_it != l_end; ++l_it) {
       if (NOUN_IS_UNDEFINED(*l_it))
@@ -1029,7 +1045,8 @@ void env_delete(env_t *env, jit_oper_t *root) {
     }
   }
   {
-    tagged_noun_t *nl_it = vec_get(&env->next_locals, 0);
+    // REVISIT: pass a elem_destroy_fn to vec_destroy
+    tagged_noun_t *nl_it = (tagged_noun_t *)vec_get(&env->next_locals, 0);
     tagged_noun_t *nl_end = nl_it + vec_size(&env->next_locals);
     for(; nl_it != nl_end; ++nl_it) {
       if (NOUN_IS_DEFINED(*nl_it))
@@ -1054,7 +1071,8 @@ void env_delete(env_t *env, jit_oper_t *root) {
 
 #if NOCK_LLVM
   {
-    char **ln_it = vec_get(&env->locals_names, 0);
+    // REVISIT: pass a elem_destroy_fn to vec_destroy
+    char **ln_it = (char **)vec_get(&env->locals_names, 0);
     char **ln_end = ln_it + vec_size(&env->locals_names);
     for(; ln_it != ln_end; ++ln_it) {
       if (*ln_it != NULL)
@@ -1063,7 +1081,8 @@ void env_delete(env_t *env, jit_oper_t *root) {
   }
   vec_destroy(&env->locals_names);
   {
-    char **nln_it = vec_get(&env->next_locals_names, 0);
+    // REVISIT: pass a elem_destroy_fn to vec_destroy
+    char **nln_it = (char **)vec_get(&env->next_locals_names, 0);
     char **nln_end = nln_it + vec_size(&env->next_locals_names);
     for(; nln_it != nln_end; ++nln_it) {
       if (*nln_it != NULL)
@@ -1115,15 +1134,10 @@ void env_compile(env_t *env, jit_oper_t *oper) {
   LLVMBasicBlockRef block = LLVMAppendBasicBlock(env->function, "entry");
   LLVMPositionBuilderAtEnd(env->builder, block);
   
-  LLVMValueRef body;
-  if (false) { //QQQ
-    body = COMPILE(oper);
+  LLVMValueRef body = COMPILE(oper);
+  if (env->failed) return;
 
-    if (env->failed) return;
-  } else {
-    //ZZZ
-    body = LLVMBuildAdd(env->builder, LLVMGetParam(env->function, 0), LLVMGetParam(env->function, 1), "addtmp");
-  }
+  body = LLVMBuildAdd(env->builder, LLVMGetParam(env->function, 0), LLVMGetParam(env->function, 1), "addtmp");//ZZZ
 
   // Insert body as return value.
   LLVMBuildRet(env->builder, body);
@@ -1239,12 +1253,12 @@ static jit_oper_t *fib_ast(env_t *env) {
   return decl_as_oper(decl_f0_f1);
 }
 
-void jit(tagged_noun_t args) {
+void test_jit(tagged_noun_t args) {
   // For testing, generate the AST that the pattern matcher *would*
   // generate when parsing "fib" in Nock:
 
   env_t *env = env_new();
-  bool do_fib = false;
+  bool do_fib = true;
   jit_oper_t *root = (do_fib ? fib_ast(env) : dec_ast(env));
 
   env_prep(env, root);

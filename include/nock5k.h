@@ -5,13 +5,19 @@
 #if !defined(NOCK5K_H)
 #define NOCK5K_H
 
+/* gmp.h likes to be included outside of any extern "C" blocks. */
+#include <gmp.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef __STDC_FORMAT_MACROS
 /* To pick up PRIu64 and friends: */
 #define __STDC_FORMAT_MACROS
 #endif
 
 #include <inttypes.h>
-#include <gmp.h>
 #include <config.h>
 #include <stdio.h>
 
@@ -374,5 +380,11 @@ static inline void *vec_pop(vec_t *vec) {
   --vec->elem_count;
   return result;
 }
+
+void test_jit(tagged_noun_t args);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* #if !defined(NOCK5K_H) */

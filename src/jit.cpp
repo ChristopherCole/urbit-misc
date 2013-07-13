@@ -11,14 +11,26 @@
 #include <inttypes.h>
 
 #if NOCK_LLVM
-/* REVISIT: these *must* come before the inclusion of nock5k.h: figure
- * out why. */
-#include <llvm-c/ExecutionEngine.h>
-#include <llvm-c/Target.h>
-#include <llvm-c/Transforms/Scalar.h>
-#include <llvm-c/Core.h>
-#include <llvm-c/Analysis.h>
+#include "llvm/Analysis/Passes.h"
+#include "llvm/Analysis/Verifier.h"
+#include "llvm/ExecutionEngine/ExecutionEngine.h"
+#include "llvm/ExecutionEngine/JIT.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
+#include "llvm/PassManager.h"
+#include "llvm/Support/TargetSelect.h"
+#include "llvm/Transforms/Scalar.h"
+#if UINTPTR_MAX == UINT64_MAX
+#define llvm_tagged_noun_type() Type::getInt64Ty(getGlobalContext())
+#else
+#define llvm_tagged_noun_type() Type::getInt32Ty(getGlobalContext())
 #endif
+
+using namespace llvm;
+#endif /* NOCK_LLVM */
 
 #include "nock5k.h"
 
@@ -31,9 +43,9 @@ __thread machine_t *machine;
 
 #if NOCK_LLVM
 typedef struct llvm_s {
-  LLVMModuleRef module;
-  LLVMExecutionEngineRef engine;
-  LLVMPassManagerRef pass_manager;
+  Module *module;
+  ExecutionEngine *engine;
+  FunctionPassManager *pass_manager;
 } llvm_t;
 #endif
 
@@ -41,42 +53,49 @@ typedef struct llvm_s {
 void llvm_init_global() {
   char *msg;
 
-  if (LLVMInitializeNativeTarget() == 1) {
+  if (InitializeNativeTarget() == 1) {
     ERROR0("Could not initialize LLVM native target\n");
-    exit(5);
+    exit(5);//ZZZ: exit codes
   }
-  LLVMLinkInJIT();
+  // LLVMLinkInJIT();//ZZZ
 }
 #endif
 
 #if NOCK_LLVM
 llvm_t *llvm_new(const char *module_name) {
   llvm_t *llvm = ALLOC(llvm_t);
-  char *msg;
+  LLVMContext &Context = getGlobalContext();
 
-  llvm->module = LLVMModuleCreateWithName(module_name);
+  llvm->module = new Module(module_name, Context);
     
   // Create execution engine.
-  if (LLVMCreateExecutionEngineForModule(&(llvm->engine), llvm->module, &msg) == 1) {
-    fprintf(stderr, "%s\n", msg);//ZZZ
-    LLVMDisposeMessage(msg);
-    exit(5);
+  std::string ErrStr;
+  llvm->engine = EngineBuilder(llvm->module).setErrorStr(&ErrStr).create();
+  if (!llvm->engine) {
+    fprintf(stderr, "Could not create ExecutionEngine: %s\n", ErrStr.c_str());//ZZZ
+    exit(1);//ZZZ: exit codes
   }
     
   // Setup optimizations.
-  llvm->pass_manager =  LLVMCreateFunctionPassManagerForModule(llvm->module);
+  llvm->pass_manager = new FunctionPassManager(llvm->module);
 
-  LLVMAddTargetData(LLVMGetExecutionEngineTargetData(llvm->engine), llvm->pass_manager); /* ok */
-  LLVMAddPromoteMemoryToRegisterPass(llvm->pass_manager); /* ok */
-  LLVMAddInstructionCombiningPass(llvm->pass_manager); /* ok */
-  LLVMAddReassociatePass(llvm->pass_manager); /* ok */
-  LLVMAddGVNPass(llvm->pass_manager); /* ok */
-  LLVMAddCFGSimplificationPass(llvm->pass_manager); /* ok */
-  LLVMInitializeFunctionPassManager(llvm->pass_manager); /* check this */
+  // Set up the optimizer pipeline.  Start with registering info about how the
+  // target lays out data structures.
+  llvm->pass_manager->add(new DataLayout(*llvm->engine->getDataLayout()));
+  // Provide basic AliasAnalysis support for GVN.
+  llvm->pass_manager->add(createBasicAliasAnalysisPass());
+  // Promote allocas to registers.
+  llvm->pass_manager->add(createPromoteMemoryToRegisterPass());
+  // Do simple "peephole" optimizations and bit-twiddling optzns.
+  llvm->pass_manager->add(createInstructionCombiningPass());
+  // Reassociate expressions.
+  llvm->pass_manager->add(createReassociatePass());
+  // Eliminate Common SubExpressions.
+  llvm->pass_manager->add(createGVNPass());
+  // Simplify the control flow graph (deleting unreachable blocks, etc).
+  llvm->pass_manager->add(createCFGSimplificationPass());
 
-  // TODO: check against the above:
-  // // Provide basic AliasAnalysis support for GVN.
-  // OurFPM.add(createBasicAliasAnalysisPass()); /* check this */
+  llvm->pass_manager->doInitialization();
 
   return llvm;
 }
@@ -84,9 +103,8 @@ llvm_t *llvm_new(const char *module_name) {
 
 #if NOCK_LLVM
 void llvm_delete(llvm_t *llvm) {
-  LLVMDumpModule(llvm->module);
-  LLVMDisposePassManager(llvm->pass_manager);
-  LLVMDisposeModule(llvm->module);
+  delete llvm->pass_manager;
+  delete llvm->module;
 }
 #endif
 
@@ -201,8 +219,8 @@ typedef struct {
 #if NOCK_LLVM
   vec_t locals_names;
   vec_t next_locals_names;
-  LLVMBuilderRef builder;
-  LLVMValueRef function;
+  IRBuilder<> *builder;
+  Function *function;
   void *fp;
 #endif
   // Failure information:
@@ -388,10 +406,9 @@ static void env_declare_loop(env_t *env) {
   ASSIGN(env->local_variable_index_map, cell_new(machine->heap, env->loop_body_placeholder, env->local_variable_index_map), ENV_OWNER);
 }
 
-static LLVMValueRef compile_alloca(env_t *env, const char *var_name) {
-  DEBUG("%s var_name=%s\n", __FUNCTION__, var_name);
-  LLVMPositionBuilderAtEnd(env->builder, LLVMGetEntryBasicBlock(env->function));
-  return LLVMBuildAlloca(env->builder, llvm_tagged_noun_type(), var_name);
+static Value *compile_alloca(env_t *env, const char *var_name) {
+  IRBuilder<> builder(&env->function->getEntryBlock(), env->function->getEntryBlock().begin());
+  return builder.CreateAlloca(llvm_tagged_noun_type(), 0, var_name);
 }
 
 struct jit_oper;
@@ -401,7 +418,7 @@ typedef void (*prep_fn_t)(struct jit_oper *oper, env_t *env);
 typedef void (*eval_fn_t)(struct jit_oper *oper, env_t *env);
 #define EVAL(oper) ((oper)->eval_fn)(oper, env)
 #if NOCK_LLVM
-typedef LLVMValueRef (*compile_fn_t)(struct jit_oper *oper, env_t *env);
+typedef void (*compile_fn_t)(struct jit_oper *oper, env_t *env);
 #define COMPILE(oper) ((oper)->compile_fn)(oper, env)
 #endif
 typedef void (*delete_fn_t)(struct jit_oper *oper);
@@ -481,8 +498,8 @@ static void decl_compile_impl(env_t *env, tagged_noun_t local_variable_initial_v
       char *var_name = make_var_name("l", index);
       vec_resize(&env->locals_names, index + 1, &null);
       vec_set(&env->locals_names, index, &var_name);
-      LLVMValueRef value = LLVMConstInt(llvm_tagged_noun_type(), local_variable_initial_values, 0);
-      LLVMBuildStore(env->builder, value, compile_alloca(env, var_name));
+      Value *value = ConstantInt::get(getGlobalContext(), APInt(64, local_variable_initial_values));
+      env->builder->CreateStore(value, compile_alloca(env, var_name));
     }
     {
       char *var_name = make_var_name("nl", index);
@@ -495,10 +512,10 @@ static void decl_compile_impl(env_t *env, tagged_noun_t local_variable_initial_v
 #endif /* NOCK_LLVM */
 
 #if NOCK_LLVM
-LLVMValueRef decl_compile(jit_oper_t *oper, env_t *env) {
+void decl_compile(jit_oper_t *oper, env_t *env) {
   DEBUG("%s\n", __FUNCTION__);
 
-  if (env->failed) return NULL;
+  if (env->failed) return;
 
   jit_decl_t *decl = oper_as_decl(oper);
 
@@ -622,11 +639,10 @@ void binop_delete(jit_oper_t *oper) {
 }
 
 #if NOCK_LLVM
-LLVMValueRef binop_compile(jit_oper_t *oper, env_t *env) {
+void binop_compile(jit_oper_t *oper, env_t *env) {
   DEBUG("%s\n", __FUNCTION__);
 
   //ZZZ
-  return NULL;
 }
 #endif /* NOCK_LLVM */
 
@@ -695,11 +711,10 @@ void inc_delete(jit_oper_t *oper) {
 }
 
 #if NOCK_LLVM
-LLVMValueRef inc_compile(jit_oper_t *oper, env_t *env) {
+void inc_compile(jit_oper_t *oper, env_t *env) {
   DEBUG("%s\n", __FUNCTION__);
 
   //ZZZ
-  return NULL;
 }
 #endif /* NOCK_LLVM */
 
@@ -757,11 +772,10 @@ void load_delete(jit_oper_t *oper) {
 }
 
 #if NOCK_LLVM
-LLVMValueRef load_compile(jit_oper_t *oper, env_t *env) {
+void load_compile(jit_oper_t *oper, env_t *env) {
   DEBUG("%s\n", __FUNCTION__);
 
   //ZZZ
-  return NULL;
 }
 #endif /* NOCK_LLVM */
 
@@ -818,11 +832,10 @@ void store_delete(jit_oper_t *oper) {
 }
 
 #if NOCK_LLVM
-LLVMValueRef store_compile(jit_oper_t *oper, env_t *env) {
+void store_compile(jit_oper_t *oper, env_t *env) {
   DEBUG("%s\n", __FUNCTION__);
 
   //ZZZ
-  return NULL;
 }
 #endif /* NOCK_LLVM */
 
@@ -944,11 +957,10 @@ void loop_delete(jit_oper_t *oper) {
 }
 
 #if NOCK_LLVM
-LLVMValueRef loop_compile(jit_oper_t *oper, env_t *env) {
+void loop_compile(jit_oper_t *oper, env_t *env) {
   DEBUG("%s\n", __FUNCTION__);
 
   //ZZZ
-  return NULL;
 }
 #endif /* NOCK_LLVM */
 
@@ -1059,10 +1071,13 @@ void env_delete(env_t *env, jit_oper_t *root) {
   if (NOUN_IS_DEFINED(env->args_root))
     UNSHARE(env->args_root, ENV_OWNER);
 #if NOCK_LLVM
-  if (env->function != NULL)
-    LLVMDeleteFunction(env->function);
+  // REVISIT: Deleting the function while it is referred to by the
+  // module causes problems.  Figure out what (if anything) we need to
+  // do after compilation to free resources.
+  // if (env->function != NULL)
+  //   delete env->function;
   if (env->builder != NULL)
-    LLVMDisposeBuilder(env->builder);
+    delete env->builder;
 #endif
 
   vec_destroy(&env->locals);
@@ -1113,43 +1128,47 @@ tagged_noun_t env_eval(env_t *env, jit_oper_t *oper, tagged_noun_t args) {
 #if NOCK_LLVM
 void env_compile(env_t *env, jit_oper_t *oper) {
   llvm_t *llvm = machine->llvm;
-  env->builder = LLVMCreateBuilder();
+  env->builder = new IRBuilder<> (getGlobalContext());
+
+  // REVISIT: calling convention fastcc? (Function::setCallingConv())
 
   // Create argument list.
-  int arg_count = 2; //ZZZ
-  LLVMTypeRef *params = (LLVMTypeRef *)calloc(arg_count, sizeof(LLVMTypeRef));
-  for (int i = 0; i < arg_count; ++i)
-    params[i] = llvm_tagged_noun_type();
-  
-  // REVISIT: calling convention fastcc?
+  std::vector<Type*> params(2 /*ZZZ*/, llvm_tagged_noun_type());
   
   // Create function type.
-  LLVMTypeRef functionType = LLVMFunctionType(llvm_tagged_noun_type(), params, arg_count, 0);
+  FunctionType *functionType = FunctionType::get(llvm_tagged_noun_type(), params, false);
   
   // Create function.
-  env->function = LLVMAddFunction(llvm->module, /* anonymous */ "", functionType);
-  LLVMSetLinkage(env->function, LLVMPrivateLinkage);
+  env->function = Function::Create(functionType, Function::PrivateLinkage, std::string(""), llvm->module);
 
   // Create basic block.
-  LLVMBasicBlockRef block = LLVMAppendBasicBlock(env->function, "entry");
-  LLVMPositionBuilderAtEnd(env->builder, block);
-  
-  LLVMValueRef body = COMPILE(oper);
+  BasicBlock *block = BasicBlock::Create(getGlobalContext(), "entry", env->function);
+  env->builder->SetInsertPoint(block);
+
+  COMPILE(oper);
   if (env->failed) return;
 
-  body = LLVMBuildAdd(env->builder, LLVMGetParam(env->function, 0), LLVMGetParam(env->function, 1), "addtmp");//ZZZ
+  Function::arg_iterator iter = env->function->arg_begin();
+  Value *left = iter++;
+  Value *right = iter++;
+  Value *body = env->builder->CreateAdd(left, right, "addtmp");
 
-  // Insert body as return value.
-  LLVMBuildRet(env->builder, body);
-    
-  // Verify function.
-  ENV_CHECK_VOID(!LLVMVerifyFunction(env->function, LLVMPrintMessageAction), "Invalid function");
+  // Finish off the function.
+  env->builder->CreateRet(body);
 
-  LLVMDumpValue(env->function); //QQQ
+  // Validate the generated code, checking for consistency.
+  ENV_CHECK_VOID(!verifyFunction(*(env->function), ReturnStatusAction), "Invalid function");
 
-  LLVMRunFunctionPassManager(llvm->pass_manager, env->function);
+  // Print the function.
+  env->function->dump();
 
-  env->fp = LLVMGetPointerToGlobal(llvm->engine, env->function);
+  // Optimize the function.
+  llvm->pass_manager->run(*(env->function));
+
+  // Print the function.
+  env->function->dump();
+
+  env->fp = llvm->engine->getPointerToFunction(env->function);
 }
 #endif /* NOCK_LLVM */
 
@@ -1253,7 +1272,7 @@ static jit_oper_t *fib_ast(env_t *env) {
   return decl_as_oper(decl_f0_f1);
 }
 
-void test_jit(tagged_noun_t args) {
+void test_jit(tagged_noun_t args) { //QQQ
   // For testing, generate the AST that the pattern matcher *would*
   // generate when parsing "fib" in Nock:
 

@@ -54,7 +54,7 @@ usage(const char *format, ...) {
   }
 
   fprintf(stderr, "%s", "Usage: nock5k [options] [<file1> <file2> ...]\n\n  --enable-tracing\n        turn tracing on\n  --disable-tracing\n        turn tracing off\n  --help\n        prints this usage text\n  <file1> <file2> ...\n        files to interpret (use \"-\" for standard input)\n");
-  exit(1);
+  exit(1);//ZZZ: exit codes
 }
 
 void vec_init(vec_t *vec, size_t elem_size) {

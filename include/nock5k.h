@@ -50,17 +50,11 @@ static mpz_t SATOM_MAX_MPZ;
 typedef uint64_t satom_t;
 #define SATOM_FMT PRIu64
 #define SATOM_T_MAX UINT64_MAX
-#if NOCK_LLVM
-#define llvm_tagged_noun_type() LLVMInt64Type()
-#endif
 #elif UINTPTR_MAX == UINT32_MAX
 /* 32 bit pointers */
 typedef uint32_t satom_t;
 #define SATOM_FMT PRIu32
 #define SATOM_T_MAX UINT32_MAX
-#if NOCK_LLVM
-#define llvm_tagged_noun_type() LLVMInt32Type()
-#endif
 #else
 /* PDP-10, is that you? */
 #error Unsupported pointer size (require 32 or 64 bits)
@@ -381,7 +375,7 @@ static inline void *vec_pop(vec_t *vec) {
   return result;
 }
 
-void test_jit(tagged_noun_t args);
+void test_jit(tagged_noun_t args); //QQQ
 
 #ifdef __cplusplus
 }

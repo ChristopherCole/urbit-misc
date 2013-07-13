@@ -25,22 +25,16 @@ endif
 
 # -lprofiler 
 
-nock5k: nock5k.o jit.o
-	$(CXX) -lgmp ${LLVM_LINK_FLAGS} ${OPT} -o build/bin/nock5k build/bin/nock5k.o build/bin/jit.o
+arkham: build/bin arkham.o jit.o
+	$(CXX) -lgmp ${LLVM_LINK_FLAGS} ${OPT} -o build/bin/arkham build/bin/arkham.o build/bin/jit.o
 
-nock5k.o: build_dir ${SRC}/nock5k.c
-	$(CC) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/nock5k.c -o build/bin/nock5k.o
+arkham.o: build/bin ${SRC}/arkham.c
+	$(CC) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/arkham.c -o build/bin/arkham.o
 
-nock5k.i: build_dir ${SRC}/nock5k.c
-	$(CC) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -E ${SRC}/nock5k.c -o build/bin/nock5k.i
+jit.o: build/bin ${SRC}/jit.cpp
+	$(CXX) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/jit.cpp -o build/bin/jit.o
 
-jit.o: build_dir ${SRC}/jit.c
-	$(CXX) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/jit.c -o build/bin/jit.o
-
-jit.i: build_dir ${SRC}/jit.c
-	$(CC) -DNOCK_PRODUCTION=${NOCK_PRODUCTION} -DNOCK_LLVM=${NOCK_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -E ${SRC}/jit.c -o build/bin/jit.i
-
-build_dir:
+build/bin:
 	mkdir -p build/bin
 
 clean:

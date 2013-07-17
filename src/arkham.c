@@ -11,7 +11,7 @@
 #include <inttypes.h>
 #include <gmp.h>
 
-#include "nock5k.h"
+#include "arkham.h"
 
 #if ALLOC_DEBUG
 /* When doing allocation debugging we need ownership information: */
@@ -54,7 +54,7 @@ usage(const char *format, ...) {
   }
 
   fprintf(stderr, "%s", "Usage: nock5k [options] [<file1> <file2> ...]\n\n  --enable-tracing\n        turn tracing on\n  --disable-tracing\n        turn tracing off\n  --help\n        prints this usage text\n  <file1> <file2> ...\n        files to interpret (use \"-\" for standard input)\n");
-  exit(1);//ZZZ: exit codes
+  exit(1);
 }
 
 void vec_init(vec_t *vec, size_t elem_size) {
@@ -670,8 +670,8 @@ atom_new(heap_t *heap, const char *str) {
 }
 
 tagged_noun_t
-atom_increment(tagged_noun_t noun, heap_t *heap) {
-  ASSERT0(!noun_is_freed(noun, heap));
+atom_increment(tagged_noun_t noun) {
+  ASSERT0(!noun_is_freed(noun, machine_get()->heap));
   ASSERT0(noun_get_type(noun) != cell_type);
 
   if (noun_get_type(noun) == satom_type) {
@@ -679,9 +679,11 @@ atom_increment(tagged_noun_t noun, heap_t *heap) {
     if (satom != SATOM_MAX)
       return satom_as_noun(satom + 1);
     else {
+      heap_t *heap = machine_get()->heap;
       noun = batom_new_ui(heap, SATOM_MAX);
     }
   } else {
+    heap_t *heap = machine_get()->heap;
     if (noun_is_shared(noun, heap))
       noun = batom_copy(noun, heap);
   }
@@ -691,7 +693,7 @@ atom_increment(tagged_noun_t noun, heap_t *heap) {
   return noun;
 }
 
-bool
+tagged_noun_t
 atom_equals(tagged_noun_t a, tagged_noun_t b) {
   enum noun_type a_type = noun_get_type(a);
   enum noun_type b_type = noun_get_type(b);
@@ -700,17 +702,17 @@ atom_equals(tagged_noun_t a, tagged_noun_t b) {
   ASSERT0(b_type != cell_type);
 
   // Assume that atoms are normalized:
-  if (a_type != b_type) return false;
+  if (a_type != b_type) return _NO;
   if (a_type == satom_type)
-    return NOUN_AS_SATOM(a) == NOUN_AS_SATOM(b);
+    return (NOUN_AS_SATOM(a) == NOUN_AS_SATOM(b)) ? _YES : _NO;
   else
-    return mpz_cmp(NOUN_AS_BATOM(a)->val, NOUN_AS_BATOM(b)->val) == 0;
+    return (mpz_cmp(NOUN_AS_BATOM(a)->val, NOUN_AS_BATOM(b)->val) == 0) ? _YES : _NO;
 }
 
 tagged_noun_t
-atom_add(tagged_noun_t n1, tagged_noun_t n2, heap_t *heap) {
-  ASSERT0(noun_is_valid_atom(n1, heap));
-  ASSERT0(noun_is_valid_atom(n2, heap));
+atom_add(tagged_noun_t n1, tagged_noun_t n2) {
+  ASSERT0(noun_is_valid_atom(n1, machine_get()->heap));
+  ASSERT0(noun_is_valid_atom(n2, machine_get()->heap));
 
   if (NOUN_IS_SATOM(n1) && NOUN_IS_SATOM(n2)) {
     satom_t sn1 = noun_as_satom(n1);
@@ -726,6 +728,7 @@ atom_add(tagged_noun_t n1, tagged_noun_t n2, heap_t *heap) {
   }
 
   tagged_noun_t sum;
+  heap_t *heap = machine_get()->heap;
 
   if (NOUN_IS_SATOM(n1))
     sum = batom_new_ui(heap, noun_as_satom(n1));
@@ -1459,7 +1462,7 @@ static tagged_noun_t nock5k_run_impl(machine_t *machine, enum op_t op, tagged_no
 
     case inc_op: {
       if (T(root) != cell_type) {
-	CITE(6); RET(atom_increment(root, heap));
+	CITE(6); RET(atom_increment(root));
       } else {
 	CRASH(machine);
       }
@@ -1470,7 +1473,7 @@ static tagged_noun_t nock5k_run_impl(machine_t *machine, enum op_t op, tagged_no
 	tagged_noun_t l = L(root);
 	if (T(l) != cell_type) {
 	  tagged_noun_t r = R(root);
-	  if (T(r) != cell_type && atom_equals(l, r)) {
+	  if (T(r) != cell_type && NOUN_EQUALS(atom_equals(l, r), _YES)) {
 	    CITE(7) ; RET(_0);	    
 	  } else {
 	    CITE(8) ; RET(_1);
@@ -1560,8 +1563,8 @@ static void nock5k_run(int n_inputs, infile_t *inputs, bool trace_flag, bool int
 
     machine_set(&machine);
 
-    if (true) { //QQQ
-      test_jit(satom_as_noun(200));
+    if (true) { // ZZZ
+      test_jit(satom_as_noun(400000));
     } else {
     bool eof = false;
     do {

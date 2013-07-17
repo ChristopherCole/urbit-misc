@@ -210,7 +210,12 @@ extern tagged_noun_t _10;
 #define _10 SATOM_AS_NOUN(10)
 #endif
 
-//ZZZ extern "C" {
+#define _YES _0
+#define _NO _1
+
+/* Gets the thread-local variable holding the pointer to the machine. */
+machine_t *machine_get();
+
 /* Sets the thread-local variable holding the pointer to the machine. */
 void machine_set(machine_t *m);
 
@@ -290,11 +295,11 @@ tagged_noun_t cell_new(struct heap *heap, tagged_noun_t left, tagged_noun_t righ
 
 bool noun_is_valid_atom(tagged_noun_t noun, struct heap *heap);
 
-tagged_noun_t atom_add(tagged_noun_t n1, tagged_noun_t n2, struct heap *heap);
+tagged_noun_t atom_add(tagged_noun_t n1, tagged_noun_t n2);
 
-bool atom_equals(tagged_noun_t a, tagged_noun_t b);
+tagged_noun_t atom_equals(tagged_noun_t n1, tagged_noun_t n2);
 
-tagged_noun_t atom_increment(tagged_noun_t noun, struct heap *heap);
+tagged_noun_t atom_increment(tagged_noun_t noun);
 
 tagged_noun_t batom_new(struct heap *heap, mpz_t val, bool clear);
 
@@ -309,8 +314,6 @@ tagged_noun_t noun_share(tagged_noun_t noun, struct heap *heap);
 
 void noun_unshare(tagged_noun_t noun, struct heap *heap, bool toplevel);
 #endif
-
-// ZZZ} /* extern "C" */
 
 typedef struct vec_s {
   size_t elem_count;

@@ -15,6 +15,7 @@
 #include "llvm/Analysis/Verifier.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/ExecutionEngine/JIT.h"
+#include "llvm/ExecutionEngine/JITEventListener.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/IRBuilder.h"
@@ -23,16 +24,19 @@
 #include "llvm/PassManager.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Transforms/Scalar.h"
+// REVISIT: cache result of "getGlobalContext()"?
 #if UINTPTR_MAX == UINT64_MAX
 #define llvm_tagged_noun_type() Type::getInt64Ty(getGlobalContext())
+#define LLVM_NOUN(noun) ConstantInt::get(getGlobalContext(), APInt(64, noun))
 #else
 #define llvm_tagged_noun_type() Type::getInt32Ty(getGlobalContext())
+#define LLVM_NOUN(noun) ConstantInt::get(getGlobalContext(), APInt(32, noun))
 #endif
 
 using namespace llvm;
 #endif /* NOCK_LLVM */
 
-#include "nock5k.h"
+#include "arkham.h"
 
 #define ENV_FAIL(pstr, msg) env_fail(env, pstr, msg, __FILE__, __FUNCTION__, __LINE__);
 #define ENV_CHECK_VOID(p, msg) do { const char *pstr = #p; if (!(p)) { ENV_FAIL(pstr, msg); return; } } while(false)
@@ -55,13 +59,21 @@ void llvm_init_global() {
 
   if (InitializeNativeTarget() == 1) {
     ERROR0("Could not initialize LLVM native target\n");
-    exit(5);//ZZZ: exit codes
+    exit(1);
   }
-  // LLVMLinkInJIT();//ZZZ
 }
 #endif
 
 #if NOCK_LLVM
+class TestJITEventListener : public JITEventListener {
+public:
+  virtual void NotifyFunctionEmitted(const Function &function,
+				     void *data, size_t size,
+				     const EmittedFunctionDetails &details) {
+    INFO("%s %p %lu\n", __FUNCTION__, data, size);
+  }
+};
+
 llvm_t *llvm_new(const char *module_name) {
   llvm_t *llvm = ALLOC(llvm_t);
   LLVMContext &Context = getGlobalContext();
@@ -70,12 +82,34 @@ llvm_t *llvm_new(const char *module_name) {
     
   // Create execution engine.
   std::string ErrStr;
-  llvm->engine = EngineBuilder(llvm->module).setErrorStr(&ErrStr).create();
+  EngineBuilder builder = EngineBuilder(llvm->module).setErrorStr(&ErrStr);
+  if (false) {
+    TargetMachine *target = builder.selectTarget();
+    target->Options.PrintMachineCode = true;
+    llvm->engine = builder.create(target);
+  } else {
+    llvm->engine = builder.create();
+  }
   if (!llvm->engine) {
-    fprintf(stderr, "Could not create ExecutionEngine: %s\n", ErrStr.c_str());//ZZZ
-    exit(1);//ZZZ: exit codes
+    ERROR("Could not create ExecutionEngine: %s\n", ErrStr.c_str());
+    exit(1);
   }
     
+  llvm->engine->RegisterJITEventListener(new TestJITEventListener());
+
+  std::vector<Type*> parameter_types;
+  parameter_types.push_back(llvm_tagged_noun_type());
+  FunctionType *function1_type = FunctionType::get(llvm_tagged_noun_type(), parameter_types, /* is_vararg */ false);
+  parameter_types.push_back(llvm_tagged_noun_type());
+  FunctionType *function2_type = FunctionType::get(llvm_tagged_noun_type(), parameter_types, /* is_vararg */ false);
+
+  Function* atom_increment_fn = Function::Create(function1_type, Function::ExternalLinkage, "atom_increment", llvm->module);
+  llvm->engine->addGlobalMapping(atom_increment_fn, (void *)atom_increment);
+  Function* atom_equals_fn = Function::Create(function2_type, Function::ExternalLinkage, "atom_equals", llvm->module);
+  llvm->engine->addGlobalMapping(atom_equals_fn, (void *)atom_equals);
+  Function* atom_add_fn = Function::Create(function2_type, Function::ExternalLinkage, "atom_add", llvm->module);
+  llvm->engine->addGlobalMapping(atom_add_fn, (void *)atom_add);
+
   // Setup optimizations.
   llvm->pass_manager = new FunctionPassManager(llvm->module);
 
@@ -108,56 +142,60 @@ void llvm_delete(llvm_t *llvm) {
 }
 #endif
 
+machine_t *machine_get() {
+  return machine;
+}
+
 void machine_set(machine_t *m) {
   machine = m;
 }
 
-static inline tagged_noun_t
-add(tagged_noun_t n1, tagged_noun_t n2) {
-  ASSERT(noun_is_valid_atom(n1, machine->heap), "noun_is_valid_atom(n1, machine->heap)\n");
-  ASSERT(noun_is_valid_atom(n2, machine->heap), "noun_is_valid_atom(n2, machine->heap)\n");
+// static inline tagged_noun_t
+// add(tagged_noun_t n1, tagged_noun_t n2) {
+//   ASSERT(noun_is_valid_atom(n1, machine->heap), "noun_is_valid_atom(n1, machine->heap)\n");
+//   ASSERT(noun_is_valid_atom(n2, machine->heap), "noun_is_valid_atom(n2, machine->heap)\n");
 
-  // For JIT, use: http://llvm.org/docs/LangRef.html#llvm-uadd-with-overflow-intrinsics
+//   // For JIT, use: http://llvm.org/docs/LangRef.html#llvm-uadd-with-overflow-intrinsics
 
-  if (NOUN_IS_SATOM(n1) && NOUN_IS_SATOM(n2)) {
-    satom_t sn1 = noun_as_satom(n1);
-    satom_t sn2 = noun_as_satom(n2);
-    satom_t sum = sn1 + sn2;
-#if FAT_NOUNS
-    if (sum >= sn1 && sum >= sn2)
-      return satom_as_noun(sum);
-#else
-    if (sum & SATOM_OVERLOW_BIT)
-      return satom_as_noun(sum);
-#endif
-  }
+//   if (NOUN_IS_SATOM(n1) && NOUN_IS_SATOM(n2)) {
+//     satom_t sn1 = noun_as_satom(n1);
+//     satom_t sn2 = noun_as_satom(n2);
+//     satom_t sum = sn1 + sn2;
+// #if FAT_NOUNS
+//     if (sum >= sn1 && sum >= sn2)
+//       return satom_as_noun(sum);
+// #else
+//     if (sum & SATOM_OVERLOW_BIT)
+//       return satom_as_noun(sum);
+// #endif
+//   }
 
-  return atom_add(n1, n2, machine->heap);
-}
+//   return atom_add(n1, n2);
+// }
 
-static inline tagged_noun_t
-inc(tagged_noun_t n) {
-  ASSERT(noun_is_valid_atom(n, machine->heap), "noun_is_valid_atom(n, machine->heap)\n");
+// static inline tagged_noun_t
+// inc(tagged_noun_t n) {
+//   ASSERT(noun_is_valid_atom(n, machine->heap), "noun_is_valid_atom(n, machine->heap)\n");
 
-  if (NOUN_IS_SATOM(n)) {
-    satom_t satom = noun_as_satom(n);
-    if (satom < SATOM_MAX)
-      return satom_as_noun(satom + 1);
-  }
+//   if (NOUN_IS_SATOM(n)) {
+//     satom_t satom = noun_as_satom(n);
+//     if (satom < SATOM_MAX)
+//       return satom_as_noun(satom + 1);
+//   }
 
-  return atom_increment(n, machine->heap);
-}
+//   return atom_increment(n);
+// }
 
-static inline bool
-eq(tagged_noun_t n1, tagged_noun_t n2) {
-  ASSERT(noun_is_valid_atom(n1, machine->heap), "noun_is_valid_atom(n1, machine->heap)\n");
-  ASSERT(noun_is_valid_atom(n2, machine->heap), "noun_is_valid_atom(n2, machine->heap)\n");
+// static inline tagged_noun_t
+// eq(tagged_noun_t n1, tagged_noun_t n2) {
+//   ASSERT(noun_is_valid_atom(n1, machine->heap), "noun_is_valid_atom(n1, machine->heap)\n");
+//   ASSERT(noun_is_valid_atom(n2, machine->heap), "noun_is_valid_atom(n2, machine->heap)\n");
 
-  if (NOUN_IS_SATOM(n1) && NOUN_IS_SATOM(n2))
-    return noun_as_satom(n1) == noun_as_satom(n2);
-  else
-    return atom_equals(n1, n2);
-}
+//   if (NOUN_IS_SATOM(n1) && NOUN_IS_SATOM(n2))
+//     return noun_as_satom(n1) == noun_as_satom(n2);
+//   else
+//     return atom_equals(n1, n2);
+// }
 
 extern tagged_noun_t
 fib(tagged_noun_t n) {
@@ -167,19 +205,17 @@ fib(tagged_noun_t n) {
   tagged_noun_t f1 = _1;
   tagged_noun_t counter = _0;
   while (true) {
-    if (eq(n, counter))
+    if (NOUN_EQUALS(atom_equals(n, counter), _YES))
       return f0;
     else {
-      counter = inc(counter);
-      tagged_noun_t sum = add(f0, f1);
+      counter = atom_increment(counter);
+      tagged_noun_t sum = atom_add(f0, f1);
       f0 = f1;
       f1 = sum;
     }
   }
 }
 
-#define _YES _0
-#define _NO _1
 #if ALLOC_DEBUG
 #define SHARE(noun, o) noun_share(noun, machine->heap, o)
 #define UNSHARE(noun, o) noun_unshare(noun, machine->heap, true, o)
@@ -203,6 +239,15 @@ typedef uint32_t jit_index_t;
 #define JIT_STACK_MAX UINT16_MAX
 
 typedef struct {
+  tagged_noun_t value;
+#if NOCK_LLVM
+  char *name;
+  Value *llvm_value;
+  tagged_noun_t initial_value;
+#endif
+} local_t;
+
+typedef struct {
   vec_t locals;
   vec_t next_locals;
   vec_t stack;
@@ -217,8 +262,6 @@ typedef struct {
   jit_index_t max_stack_index;
   // Needed during compilation:
 #if NOCK_LLVM
-  vec_t locals_names;
-  vec_t next_locals_names;
   IRBuilder<> *builder;
   Function *function;
   void *fp;
@@ -244,19 +287,55 @@ env_fail(env_t *env, const char *predicate, const char *failure_message, const c
   nock_log(ERROR_PREFIX " Failure to compile: predicate = '%s', message = '%s', file = '%s', function = '%s', line = %d\n", predicate, failure_message, file_name, function_name, line_number);
 }
 
-static jit_index_t env_allocate_local(env_t *env) {
+#if NOCK_LLVM
+static char *make_var_name(const char *prefix, satom_t satom) {
+  const int n = snprintf(NULL, 0, "%s%" SATOM_FMT, prefix, satom);
+  ASSERT0(n > 0);
+  char buf[n+1];
+  int c = snprintf(buf, n+1, "%s%" SATOM_FMT, prefix, satom);
+  ASSERT0(buf[n] == '\0');
+  ASSERT0(c == n);
+  return strdup(buf);
+}
+#endif /* NOCK_LLVM */
+
+#if NOCK_LLVM
+static Value *compile_alloca(env_t *env, const char *var_name) {
+  IRBuilder<> builder(&env->function->getEntryBlock(), env->function->getEntryBlock().begin());
+  return builder.CreateAlloca(llvm_tagged_noun_type(), 0, var_name);
+}
+#endif /* NOCK_LLVM */
+
+static void env_init_local(env_t *env, local_t *local, const char *prefix, jit_index_t index, tagged_noun_t initial_value) {
+    local->value = _UNDEFINED;
+#if NOCK_LLVM
+    local->name = make_var_name(prefix, index);
+    local->initial_value = initial_value;
+    local->llvm_value = compile_alloca(env, local->name);
+#endif
+}
+
+static jit_index_t env_allocate_local(env_t *env, tagged_noun_t initial_value) {
   if (env->failed) return 0;
 
   ENV_CHECK(env->next_local_variable_index < JIT_INDEX_MAX, "Too many local variable declarations", 0);
-  int index = env->next_local_variable_index++;
+  jit_index_t index = env->next_local_variable_index++;
 
-  tagged_noun_t undef = _UNDEFINED;
-  vec_resize(&env->locals, index + 1, &undef);
-  vec_resize(&env->next_locals, index + 1, &undef);
+  {
+    local_t local;
+    env_init_local(env, &local, "local", index, initial_value);
+    vec_resize(&env->locals, index + 1, &local);
+  }
+  {
+    local_t local;
+    env_init_local(env, &local, "next_local", index, _UNDEFINED);
+    vec_resize(&env->next_locals, index + 1, &local);
+  }
 
   return index;
 }
 
+// An address can be an argument or a declared variable.
 static void env_allocate_address(env_t *env, jit_address_t address) {
   ENV_CHECK_VOID(address >= 1, "Invalid address");
 
@@ -295,7 +374,7 @@ static void env_allocate_address(env_t *env, jit_address_t address) {
     // Allocate an index and initialize the local variable.
 
     // Allocate a local variable slot for an argument:
-    noun = satom_as_noun(env_allocate_local(env));
+    noun = satom_as_noun(env_allocate_local(env, _UNDEFINED));
 
     if (NOUN_IS_UNDEFINED(env->args_root)) {
       env->args_root = noun;
@@ -353,7 +432,7 @@ tagged_noun_t env_get_stack(env_t *env, jit_index_t index) {
 
   ENV_CHECK(index <= env->max_stack_index, "Invalid index", _UNDEFINED);
 
-  tagged_noun_t value = *(tagged_noun_t *)vec_get(&env->stack, index);
+  tagged_noun_t value = ((local_t *)vec_get(&env->stack, index))->value;
   ENV_CHECK(NOUN_IS_DEFINED(value), "Undefined value", _UNDEFINED);
 
   return value;
@@ -366,7 +445,7 @@ void env_set_stack(env_t *env, jit_index_t index, tagged_noun_t value) {
   ENV_CHECK_VOID(NOUN_IS_DEFINED(value), "Undefined value");
 
   SHARE(value, STACK_OWNER);
-  vec_set(&env->stack, index, &value);
+  ((local_t *)vec_get(&env->stack, index))->value = value;
 }
 
 static tagged_noun_t env_get_local(env_t *env, jit_index_t index) {
@@ -374,7 +453,7 @@ static tagged_noun_t env_get_local(env_t *env, jit_index_t index) {
 
   ENV_CHECK(index < vec_size(&env->locals), "Invalid index", _UNDEFINED);
 
-  tagged_noun_t value = *(tagged_noun_t *)vec_get(&env->locals, index);
+  tagged_noun_t value = ((local_t *)vec_get(&env->locals, index))->value;
   ENV_CHECK(NOUN_IS_DEFINED(value), "Undefined value", _UNDEFINED);
 
   return value;
@@ -388,37 +467,34 @@ static void env_set_local(env_t *env, jit_index_t index, tagged_noun_t value) {
   ENV_CHECK_VOID(NOUN_IS_DEFINED(value), "Undefined value");
 
   SHARE(value, LOCALS_OWNER);
-  vec_set(&env->next_locals, index, &value);
+  ((local_t *)vec_get(&env->next_locals, index))->value = value;
 }
 
 static void env_initialize_local(env_t *env, jit_index_t index, tagged_noun_t value) {
   if (env->failed) return;
 
   ENV_CHECK_VOID(index < vec_size(&env->locals), "Invalid index");
-  ENV_CHECK_VOID(NOUN_IS_UNDEFINED(*(tagged_noun_t *)vec_get(&env->locals, index)), "Overwritten value");
+  ENV_CHECK_VOID(NOUN_IS_UNDEFINED(((local_t *)vec_get(&env->locals, index))->value), "Overwritten value");
   ENV_CHECK_VOID(NOUN_IS_DEFINED(value), "Undefined value");
 
   SHARE(value, LOCALS_OWNER);
-  vec_set(&env->locals, index, &value);
+  ((local_t *)vec_get(&env->locals, index))->value = value;
 }
 
 static void env_declare_loop(env_t *env) {
   ASSIGN(env->local_variable_index_map, cell_new(machine->heap, env->loop_body_placeholder, env->local_variable_index_map), ENV_OWNER);
 }
 
-static Value *compile_alloca(env_t *env, const char *var_name) {
-  IRBuilder<> builder(&env->function->getEntryBlock(), env->function->getEntryBlock().begin());
-  return builder.CreateAlloca(llvm_tagged_noun_type(), 0, var_name);
-}
-
 struct jit_oper;
 
 typedef void (*prep_fn_t)(struct jit_oper *oper, env_t *env);
 #define PREP(oper) ((oper)->prep_fn)(oper, env)
+typedef void (*dump_fn_t)(struct jit_oper *oper, env_t *env);
+#define DUMP(oper) ((oper)->dump_fn)(oper, env)
 typedef void (*eval_fn_t)(struct jit_oper *oper, env_t *env);
 #define EVAL(oper) ((oper)->eval_fn)(oper, env)
 #if NOCK_LLVM
-typedef void (*compile_fn_t)(struct jit_oper *oper, env_t *env);
+typedef Value * (*compile_fn_t)(struct jit_oper *oper, env_t *env);
 #define COMPILE(oper) ((oper)->compile_fn)(oper, env)
 #endif
 typedef void (*delete_fn_t)(struct jit_oper *oper);
@@ -427,8 +503,11 @@ typedef void (*delete_fn_t)(struct jit_oper *oper);
 typedef struct jit_oper {
   struct jit_oper *outer;
   prep_fn_t prep_fn;
+  dump_fn_t dump_fn;
   eval_fn_t eval_fn;
+#if NOCK_LLVM
   compile_fn_t compile_fn;
+#endif
   delete_fn_t delete_fn;
   // TODO: source information: file, line, column
 } jit_oper_t;
@@ -457,8 +536,15 @@ static tagged_noun_t decl_prep_impl(env_t *env, tagged_noun_t local_variable_ini
     return cell_new(machine->heap, left, right);
   } else {
     // Allocate a local variable slot for a declared variable:
-    return satom_as_noun(env_allocate_local(env));
+    return satom_as_noun(env_allocate_local(env, local_variable_initial_values));
   }
+}
+
+void decl_dump(jit_oper_t *oper, env_t *env) {
+  if (env->failed) return;
+
+  printf("decl(\n");
+  DUMP(oper_as_decl(oper)->inner);
 }
 
 void decl_prep(jit_oper_t *oper, env_t *env) {
@@ -475,51 +561,11 @@ void decl_prep(jit_oper_t *oper, env_t *env) {
   PREP(decl->inner);
 }
 
-static char *make_var_name(const char *prefix, satom_t satom) {
-  const int n = snprintf(NULL, 0, "%s%" SATOM_FMT, prefix, satom);
-  ASSERT0(n > 0);
-  char buf[n+1];
-  int c = snprintf(buf, n+1, "%s%" SATOM_FMT, prefix, satom);
-  ASSERT0(buf[n] == '\0');
-  ASSERT0(c == n);
-  return strdup(buf);
-}
-
 #if NOCK_LLVM
-static void decl_compile_impl(env_t *env, tagged_noun_t local_variable_initial_values, tagged_noun_t local_variable_index_map) {
-  if (noun_get_type(local_variable_initial_values) == cell_type) {
-    decl_compile_impl(env, noun_get_left(local_variable_initial_values), noun_get_left(local_variable_index_map));
-    decl_compile_impl(env, noun_get_right(local_variable_initial_values), noun_get_right(local_variable_index_map));
-  } else {
-    satom_t index = noun_as_satom(local_variable_index_map);
-    ENV_CHECK_VOID(index <= JIT_INDEX_MAX, "Invalid index");
-    char *null = NULL;
-    {
-      char *var_name = make_var_name("l", index);
-      vec_resize(&env->locals_names, index + 1, &null);
-      vec_set(&env->locals_names, index, &var_name);
-      Value *value = ConstantInt::get(getGlobalContext(), APInt(64, local_variable_initial_values));
-      env->builder->CreateStore(value, compile_alloca(env, var_name));
-    }
-    {
-      char *var_name = make_var_name("nl", index);
-      vec_resize(&env->next_locals_names, index + 1, &null);
-      vec_set(&env->next_locals_names, index, &var_name);
-      compile_alloca(env, var_name);
-    }
-  }
-}
-#endif /* NOCK_LLVM */
-
-#if NOCK_LLVM
-void decl_compile(jit_oper_t *oper, env_t *env) {
-  DEBUG("%s\n", __FUNCTION__);
-
-  if (env->failed) return;
+Value *decl_compile(jit_oper_t *oper, env_t *env) {
+  if (env->failed) return NULL;
 
   jit_decl_t *decl = oper_as_decl(oper);
-
-  decl_compile_impl(env, decl->local_variable_initial_values, decl->local_variable_index_map);
 
   return COMPILE(decl->inner);
 }
@@ -562,8 +608,11 @@ jit_decl_t *decl_new(tagged_noun_t local_variable_initial_values) {
   decl->local_variable_initial_values = local_variable_initial_values;
   decl->local_variable_index_map = _UNDEFINED;
   decl_as_oper(decl)->prep_fn = decl_prep;
+  decl_as_oper(decl)->dump_fn = decl_dump;
   decl_as_oper(decl)->eval_fn = decl_eval;
+#if NOCK_LLVM
   decl_as_oper(decl)->compile_fn = decl_compile;
+#endif
   decl_as_oper(decl)->delete_fn = decl_delete;
 
   return decl;
@@ -591,6 +640,23 @@ typedef struct jit_binop {
 #define binop_as_oper(binop) expr_as_oper(binop_as_expr(binop))
 #define oper_as_binop(oper) ((jit_binop_t *)(oper))
 
+void binop_dump(jit_oper_t *oper, env_t *env) {
+  if (env->failed) return;
+
+  jit_binop_t *binop = oper_as_binop(oper);
+
+  switch (binop->type) {
+  case binop_eq_type: 
+    printf("eq(");
+  case binop_add_type:
+    printf("add(");
+  }
+  DUMP(expr_as_oper(binop->left));
+  printf(",");
+  DUMP(expr_as_oper(binop->right));
+  printf(")");
+}
+
 void binop_prep(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
 
@@ -601,6 +667,91 @@ void binop_prep(jit_oper_t *oper, env_t *env) {
 
   binop_as_expr(binop)->stack_index = --env->current_stack_index;
 }
+
+#if NOCK_LLVM
+typedef Value * (*if_atoms_fn_t)(env_t *env, Value *left, Value *right);
+#endif
+
+#if NOCK_LLVM
+static Value *if_then_else(env_t *env, Type *type, Value *left, Value *right, Value *test, if_atoms_fn_t if_atoms_fn, if_atoms_fn_t if_not_atoms_fn) {
+
+  BasicBlock *then_block = BasicBlock::Create(getGlobalContext(), "if_then", env->function);
+  BasicBlock *else_block = BasicBlock::Create(getGlobalContext(), "if_else");
+  BasicBlock *merge_block = BasicBlock::Create(getGlobalContext(), "if_merge");
+
+  env->builder->CreateCondBr(test, then_block, else_block);
+
+  // Emit 'then' value.
+  env->builder->SetInsertPoint(then_block);
+  Value *then_value = if_atoms_fn(env, left, right);
+  env->builder->CreateBr(merge_block);
+  // Codegen of 'then' can change the current block, update then_block for the PHI.
+  then_block = env->builder->GetInsertBlock();
+
+  // Emit 'else' block.
+  env->function->getBasicBlockList().push_back(else_block);
+  env->builder->SetInsertPoint(else_block);
+  Value *else_value = if_not_atoms_fn(env, left, right);
+  env->builder->CreateBr(merge_block);
+  // Codegen of 'else' can change the current block, update else_block for the PHI.
+  else_block = env->builder->GetInsertBlock();
+
+  // Emit 'merge' block.
+  env->function->getBasicBlockList().push_back(merge_block);
+  env->builder->SetInsertPoint(merge_block);
+  PHINode *phi = env->builder->CreatePHI(type, 2);
+
+  phi->addIncoming(then_value, then_block);
+  phi->addIncoming(else_value, else_block);
+
+  return phi;
+}
+
+static Value *if_atoms(env_t *env, Type *type, Value *left, Value *right, if_atoms_fn_t if_atoms_fn, if_atoms_fn_t if_not_atoms_fn) {
+  Value *both = env->builder->CreateOr(left, right);
+  Value *low_bit = env->builder->CreateAnd(both, LLVM_NOUN(1));
+  Value *test = env->builder->CreateICmpEQ(low_bit, LLVM_NOUN(0));
+
+  return if_then_else(env, type, left, right, test, if_atoms_fn, if_not_atoms_fn);
+}
+#endif
+
+#if NOCK_LLVM
+static Value *eq_if_atoms(env_t *env, Value *left, Value *right) {
+  return env->builder->CreateICmpEQ(left, right);
+}
+
+static Value *eq_if_not_atoms(env_t *env, Value *left, Value *right) {
+  return env->builder->CreateICmpEQ(env->builder->CreateCall2(machine->llvm->module->getFunction("atom_equals"), left, right), LLVM_NOUN(_YES));
+}
+
+static Value *add_if_atoms(env_t *env, Value *left, Value *right) {
+  return env->builder->CreateAdd(left, right);
+}
+
+static Value *add_if_not_atoms(env_t *env, Value *left, Value *right) {
+  return env->builder->CreateCall2(machine->llvm->module->getFunction("atom_add"), left, right);
+}
+
+Value *binop_compile(jit_oper_t *oper, env_t *env) {
+  if (env->failed) return NULL;
+
+  jit_binop_t *binop = oper_as_binop(oper);
+  jit_expr_t *expr = binop_as_expr(binop);
+
+  Value *left = COMPILE(expr_as_oper(binop->left));
+  Value *right = COMPILE(expr_as_oper(binop->right));
+
+  switch (binop->type) {
+  case binop_eq_type: 
+    return if_atoms(env, Type::getInt1Ty(getGlobalContext()), left, right, eq_if_atoms, eq_if_not_atoms);
+  case binop_add_type:
+    return if_atoms(env, llvm_tagged_noun_type(), left, right, add_if_atoms, add_if_not_atoms);
+  }
+
+  return NULL;
+}
+#endif /* NOCK_LLVM */
 
 void binop_eval(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
@@ -617,10 +768,10 @@ void binop_eval(jit_oper_t *oper, env_t *env) {
   if (!env->failed) {
     switch (binop->type) {
     case binop_eq_type:
-      env_set_stack(env, expr->stack_index, (eq(n1, n2) ? _YES : _NO));
+      env_set_stack(env, expr->stack_index, (atom_equals(n1, n2) ? _YES : _NO));
       break;
     case binop_add_type:
-      env_set_stack(env, expr->stack_index, add(n1, n2));
+      env_set_stack(env, expr->stack_index, atom_add(n1, n2));
       break;
     }
   }
@@ -638,21 +789,16 @@ void binop_delete(jit_oper_t *oper) {
   free(binop);
 }
 
-#if NOCK_LLVM
-void binop_compile(jit_oper_t *oper, env_t *env) {
-  DEBUG("%s\n", __FUNCTION__);
-
-  //ZZZ
-}
-#endif /* NOCK_LLVM */
-
 jit_binop_t *binop_new(enum binop_type type) {
   jit_binop_t *binop = ALLOC(jit_binop_t);
 
   binop->type = type;
   binop_as_oper(binop)->prep_fn = binop_prep;
+  binop_as_oper(binop)->dump_fn = binop_dump;
   binop_as_oper(binop)->eval_fn = binop_eval;
+#if NOCK_LLVM
   binop_as_oper(binop)->compile_fn = binop_compile;
+#endif
   binop_as_oper(binop)->delete_fn = binop_delete;
 
   return binop;
@@ -688,8 +834,16 @@ void inc_eval(jit_oper_t *oper, env_t *env) {
   EVAL(expr_as_oper(_inc->subexpr));
   
   tagged_noun_t popped;
-  env_set_stack(env, expr->stack_index, inc(popped = env_get_stack(env, expr->stack_index)));
+  env_set_stack(env, expr->stack_index, atom_increment(popped = env_get_stack(env, expr->stack_index)));
   UNSHARE(popped, STACK_OWNER);
+}
+
+void inc_dump(jit_oper_t *oper, env_t *env) {
+  if (env->failed) return;
+
+  printf("inc(");
+  DUMP(expr_as_oper(oper_as_inc(oper)->subexpr));
+  printf(")");
 }
 
 void inc_prep(jit_oper_t *oper, env_t *env) {
@@ -711,10 +865,21 @@ void inc_delete(jit_oper_t *oper) {
 }
 
 #if NOCK_LLVM
-void inc_compile(jit_oper_t *oper, env_t *env) {
-  DEBUG("%s\n", __FUNCTION__);
+static Value *inc_if_atoms(env_t *env, Value *subexpr, Value *unused) {
+  return env->builder->CreateAdd(subexpr, LLVM_NOUN(_1));
+}
 
-  //ZZZ
+static Value *inc_if_not_atoms(env_t *env, Value *subexpr, Value *unused) {
+  return env->builder->CreateCall(machine->llvm->module->getFunction("atom_increment"), subexpr);
+}
+
+Value *inc_compile(jit_oper_t *oper, env_t *env) {
+  jit_inc_t *inc = oper_as_inc(oper);
+
+  Value *subexpr = COMPILE(expr_as_oper(inc->subexpr));
+  Value *test = env->builder->CreateICmpULT(subexpr, LLVM_NOUN(satom_as_noun(SATOM_MAX)));
+
+  return if_then_else(env, llvm_tagged_noun_type(), subexpr, NULL, test, inc_if_atoms, inc_if_not_atoms);
 }
 #endif /* NOCK_LLVM */
 
@@ -722,8 +887,11 @@ jit_inc_t *inc_new() {
   jit_inc_t *inc = ALLOC(jit_inc_t);
 
   inc_as_oper(inc)->prep_fn = inc_prep;
+  inc_as_oper(inc)->dump_fn = inc_dump;
   inc_as_oper(inc)->eval_fn = inc_eval;
+#if NOCK_LLVM
   inc_as_oper(inc)->compile_fn = inc_compile;
+#endif
   inc_as_oper(inc)->delete_fn = inc_delete;
 
   return inc;
@@ -743,6 +911,12 @@ typedef struct jit_load {
 #define load_as_expr(load) (&(load)->expr)
 #define load_as_oper(load) expr_as_oper(load_as_expr(load))
 #define oper_as_load(oper) ((jit_load_t *)(oper))
+
+void load_dump(jit_oper_t *oper, env_t *env) {
+  if (env->failed) return;
+
+  printf("load(%" JIT_ADDRESS_FMT ")", oper_as_load(oper)->address);
+}
 
 void load_prep(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
@@ -772,10 +946,10 @@ void load_delete(jit_oper_t *oper) {
 }
 
 #if NOCK_LLVM
-void load_compile(jit_oper_t *oper, env_t *env) {
-  DEBUG("%s\n", __FUNCTION__);
-
-  //ZZZ
+Value *load_compile(jit_oper_t *oper, env_t *env) {
+  jit_load_t *load = oper_as_load(oper);
+  local_t *local = (local_t *)vec_get(&env->locals, env_get_index_of_address(env, load->address));
+  return env->builder->CreateLoad(local->llvm_value);
 }
 #endif /* NOCK_LLVM */
 
@@ -784,8 +958,11 @@ jit_load_t *load_new(jit_address_t address) {
 
   load->address = address;
   load_as_oper(load)->prep_fn = load_prep;
+  load_as_oper(load)->dump_fn = load_dump;
   load_as_oper(load)->eval_fn = load_eval;
+#if NOCK_LLVM
   load_as_oper(load)->compile_fn = load_compile;
+#endif
   load_as_oper(load)->delete_fn = load_delete;
 
   return load;
@@ -800,6 +977,14 @@ typedef struct jit_store {
 #define store_as_expr(store) (&(store)->expr)
 #define store_as_oper(store) expr_as_oper(store_as_expr(store))
 #define oper_as_store(oper) ((jit_store_t *)(oper))
+
+void store_dump(jit_oper_t *oper, env_t *env) {
+  if (env->failed) return;
+
+  printf("store(");
+  DUMP(expr_as_oper(oper_as_store(oper)->subexpr));
+  printf(", %" JIT_ADDRESS_FMT ")", oper_as_store(oper)->address);
+}
 
 void store_prep(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
@@ -832,10 +1017,19 @@ void store_delete(jit_oper_t *oper) {
 }
 
 #if NOCK_LLVM
-void store_compile(jit_oper_t *oper, env_t *env) {
-  DEBUG("%s\n", __FUNCTION__);
+Value *store_compile(jit_oper_t *oper, env_t *env) {
+  jit_store_t *store = oper_as_store(oper);
+  local_t *next_local = (local_t *)vec_get(&env->next_locals, env_get_index_of_address(env, store->address));
+  return env->builder->CreateStore(COMPILE(expr_as_oper(store->subexpr)), next_local->llvm_value);
+}
+#endif /* NOCK_LLVM */
 
-  //ZZZ
+#if NOCK_LLVM
+Value *store_copy(jit_oper_t *oper, env_t *env) {
+  jit_store_t *store = oper_as_store(oper);
+  local_t *local = (local_t *)vec_get(&env->locals, env_get_index_of_address(env, store->address));
+  local_t *next_local = (local_t *)vec_get(&env->next_locals, env_get_index_of_address(env, store->address));
+  return env->builder->CreateStore(env->builder->CreateLoad(next_local->llvm_value), local->llvm_value);
 }
 #endif /* NOCK_LLVM */
 
@@ -844,8 +1038,11 @@ jit_store_t *store_new(jit_address_t address) {
 
   store->address = address;
   store_as_oper(store)->prep_fn = store_prep;
+  store_as_oper(store)->dump_fn = store_dump;
   store_as_oper(store)->eval_fn = store_eval;
+#if NOCK_LLVM
   store_as_oper(store)->compile_fn = store_compile;
+#endif
   store_as_oper(store)->delete_fn = store_delete;
 
   return store;
@@ -873,6 +1070,27 @@ typedef struct jit_loop {
 #define loop_as_expr(loop) (&(loop)->expr)
 #define loop_as_oper(loop) expr_as_oper(loop_as_expr(loop))
 #define oper_as_loop(oper) ((jit_loop_t *)(oper))
+
+void loop_dump(jit_oper_t *oper, env_t *env) {
+  if (env->failed) return;
+
+  jit_loop_t *loop = oper_as_loop(oper);
+
+  printf("while(\n");
+  DUMP(expr_as_oper(loop->test));
+  printf(")\n");
+  printf("do(\n");
+  jit_store_list_t *store_list = loop->first_store;
+  while (store_list != NULL) {
+    jit_oper_t *store = store_as_oper(store_list->store);
+    DUMP(store);
+    store_list = store_list->next;
+  }
+  printf(")\n");
+  printf("done(\n");
+  DUMP(expr_as_oper(loop->result));
+  printf(")\n");
+}
 
 void loop_prep(jit_oper_t *oper, env_t *env) {
   if (env->failed) return;
@@ -908,7 +1126,7 @@ void loop_eval(jit_oper_t *oper, env_t *env) {
 
     if (env->failed) return;
     tagged_noun_t popped;
-    bool is_eq = eq(popped = env_get_stack(env, expr->stack_index), _YES);
+    bool is_eq = atom_equals(popped = env_get_stack(env, expr->stack_index), _YES);
     UNSHARE(popped, STACK_OWNER);
 
     if (is_eq) {
@@ -924,13 +1142,13 @@ void loop_eval(jit_oper_t *oper, env_t *env) {
       }
       // Copy the locals for the next iteration:
       // REVISIT: pass a elem_copy_fn to vec_copy
-      tagged_noun_t *l_it = (tagged_noun_t *)vec_get(&env->locals, 0);
-      tagged_noun_t *l_end = l_it + vec_size(&env->locals);
-      tagged_noun_t *nl_it = (tagged_noun_t *)vec_get(&env->next_locals, 0);
+      local_t *l_it = (local_t *)vec_get(&env->locals, 0);
+      local_t *l_end = l_it + vec_size(&env->locals);
+      local_t *nl_it = (local_t *)vec_get(&env->next_locals, 0);
       for (; l_it != l_end; ++l_it, ++nl_it) {
-	UNSHARE(*l_it, LOCALS_OWNER);
-	*l_it = *nl_it;
-	*nl_it = _UNDEFINED;
+	UNSHARE(l_it->value, LOCALS_OWNER);
+	l_it->value = nl_it->value;
+	nl_it->value = _UNDEFINED;
       }
     }
   }
@@ -957,10 +1175,65 @@ void loop_delete(jit_oper_t *oper) {
 }
 
 #if NOCK_LLVM
-void loop_compile(jit_oper_t *oper, env_t *env) {
-  DEBUG("%s\n", __FUNCTION__);
+/*
+ *            |
+ *            V
+ *        +--TEST<-+
+ *        |   |    |
+ *        |   V    |
+ *        |  NEXT--+
+ *        |   
+ *        |   
+ *        +->DONE
+ */
+Value *loop_compile(jit_oper_t *oper, env_t *env) {
+  jit_loop_t *loop = oper_as_loop(oper);
 
-  //ZZZ
+  BasicBlock *incoming_block = env->builder->GetInsertBlock();
+
+  BasicBlock *test_block = BasicBlock::Create(getGlobalContext(), "loop_test", env->function);
+  BasicBlock *next_block = BasicBlock::Create(getGlobalContext(), "loop_next");
+  BasicBlock *done_block = BasicBlock::Create(getGlobalContext(), "loop_done");
+
+  // Insert an explicit fall through from the current block to the loop.
+  env->builder->CreateBr(test_block);
+
+  // Test block.
+  env->builder->SetInsertPoint(test_block);
+  Type *loop_type = llvm_tagged_noun_type();
+  PHINode *test_phi = env->builder->CreatePHI(loop_type, 2);
+  test_phi->addIncoming(LLVM_NOUN(_0), incoming_block);
+  Value *test_value = COMPILE(expr_as_oper(loop->test));
+  test_value = env->builder->CreateICmpEQ(test_value, ConstantInt::get(getGlobalContext(), APInt(1, 0)));
+  env->builder->CreateCondBr(test_value, next_block, done_block);
+
+  // Next block.
+  env->function->getBasicBlockList().push_back(next_block);
+  env->builder->SetInsertPoint(next_block);
+  {
+    jit_store_list_t *store_list = loop->first_store;
+    while (store_list != NULL) {
+      jit_oper_t *store = store_as_oper(store_list->store);
+      COMPILE(store);
+      store_list = store_list->next;
+    }
+  }
+  {
+    jit_store_list_t *store_list = loop->first_store;
+    while (store_list != NULL) {
+      jit_oper_t *store = store_as_oper(store_list->store);
+      store_copy(store, env);
+      store_list = store_list->next;
+    }
+  }
+  env->builder->CreateBr(test_block);
+  next_block = env->builder->GetInsertBlock();
+  test_phi->addIncoming(LLVM_NOUN(_0), next_block);
+
+  // Done block.
+  env->function->getBasicBlockList().push_back(done_block);
+  env->builder->SetInsertPoint(done_block);
+  return COMPILE(expr_as_oper(loop->result));
 }
 #endif /* NOCK_LLVM */
 
@@ -968,8 +1241,11 @@ jit_loop_t *loop_new() {
   jit_loop_t *loop = ALLOC(jit_loop_t);
 
   loop_as_oper(loop)->prep_fn = loop_prep;
+  loop_as_oper(loop)->dump_fn = loop_dump;
   loop_as_oper(loop)->eval_fn = loop_eval;
+#if NOCK_LLVM
   loop_as_oper(loop)->compile_fn = loop_compile;
+#endif
   loop_as_oper(loop)->delete_fn = loop_delete;
 
   return loop;
@@ -1014,7 +1290,7 @@ static void env_initialize_args(env_t *env, tagged_noun_t args, tagged_noun_t ar
   }
 }
 
-typedef tagged_noun_t (*binop_fn_t)(tagged_noun_t a, tagged_noun_t b);//ZZZ
+typedef tagged_noun_t (*compiled_fn_t)(tagged_noun_t noun);//ZZZ
 
 env_t *env_new() {
   env_t *env = ALLOC(env_t);
@@ -1030,14 +1306,9 @@ env_t *env_new() {
   env->current_stack_index = -1;
   env->args_root = _UNDEFINED;
 
-  vec_init(&env->locals, sizeof(tagged_noun_t));
-  vec_init(&env->next_locals, sizeof(tagged_noun_t));
-  vec_init(&env->stack, sizeof(tagged_noun_t));
-
-#if NOCK_LLVM
-  vec_init(&env->locals_names, sizeof(char *));
-  vec_init(&env->next_locals_names, sizeof(char *));
-#endif /* NOCK_LLVM */
+  vec_init(&env->locals, sizeof(local_t));
+  vec_init(&env->next_locals, sizeof(local_t));
+  vec_init(&env->stack, sizeof(local_t));
 
   return env;
 }
@@ -1047,22 +1318,28 @@ void env_delete(env_t *env, jit_oper_t *root) {
 
   {
     // REVISIT: pass a elem_destroy_fn to vec_destroy
-    tagged_noun_t *l_it = (tagged_noun_t *)vec_get(&env->locals, 0);
-    tagged_noun_t *l_end = l_it + vec_size(&env->locals);
+    local_t *l_it = (local_t *)vec_get(&env->locals, 0);
+    local_t *l_end = l_it + vec_size(&env->locals);
     for(; l_it != l_end; ++l_it) {
-      if (NOUN_IS_UNDEFINED(*l_it))
+      if (NOUN_IS_UNDEFINED(l_it->value))
 	WARN0("Undefined local variable\n");
       else
-	UNSHARE(*l_it, LOCALS_OWNER);
+	UNSHARE(l_it->value, LOCALS_OWNER);
+#if NOCK_LLVM
+      free(l_it->name);
+#endif
     }
   }
   {
     // REVISIT: pass a elem_destroy_fn to vec_destroy
-    tagged_noun_t *nl_it = (tagged_noun_t *)vec_get(&env->next_locals, 0);
-    tagged_noun_t *nl_end = nl_it + vec_size(&env->next_locals);
+    local_t *nl_it = (local_t *)vec_get(&env->next_locals, 0);
+    local_t *nl_end = nl_it + vec_size(&env->next_locals);
     for(; nl_it != nl_end; ++nl_it) {
-      if (NOUN_IS_DEFINED(*nl_it))
+      if (NOUN_IS_DEFINED(nl_it->value))
 	WARN0("Leaked local variable\n");
+#if NOCK_LLVM
+      free(nl_it->name);
+#endif
     }
   }
   UNSHARE(env->args_placeholder, ENV_OWNER);
@@ -1084,29 +1361,6 @@ void env_delete(env_t *env, jit_oper_t *root) {
   vec_destroy(&env->next_locals);
   vec_destroy(&env->stack);
 
-#if NOCK_LLVM
-  {
-    // REVISIT: pass a elem_destroy_fn to vec_destroy
-    char **ln_it = (char **)vec_get(&env->locals_names, 0);
-    char **ln_end = ln_it + vec_size(&env->locals_names);
-    for(; ln_it != ln_end; ++ln_it) {
-      if (*ln_it != NULL)
-	free(*ln_it);
-    }
-  }
-  vec_destroy(&env->locals_names);
-  {
-    // REVISIT: pass a elem_destroy_fn to vec_destroy
-    char **nln_it = (char **)vec_get(&env->next_locals_names, 0);
-    char **nln_end = nln_it + vec_size(&env->next_locals_names);
-    for(; nln_it != nln_end; ++nln_it) {
-      if (*nln_it != NULL)
-	free(*nln_it);
-    }
-  }
-  vec_destroy(&env->next_locals_names);
-#endif /* NOCK_LLVM */
-
   free(env);
 }
 
@@ -1116,8 +1370,9 @@ tagged_noun_t env_eval(env_t *env, jit_oper_t *oper, tagged_noun_t args) {
   env_initialize_args(env, args, env->args_root);
 
 #if NOCK_LLVM
-  binop_fn_t binop_fn = (binop_fn_t)env->fp; //ZZZ
-  printf(">>> "); noun_print(stdout, (binop_fn)(satom_as_noun(1), satom_as_noun(2)), true); printf("\n");
+  compiled_fn_t fn = (compiled_fn_t)env->fp; //ZZZ
+  tagged_noun_t result = (fn)(args);
+  printf(">>> "); noun_print(stdout, result, true); printf("\n");
 #endif
 
   EVAL(oper);
@@ -1126,38 +1381,46 @@ tagged_noun_t env_eval(env_t *env, jit_oper_t *oper, tagged_noun_t args) {
 }
 
 #if NOCK_LLVM
+typedef struct {
+  Function::arg_iterator iter;  
+} iter_t;
+
+void env_compile_copy_args_to_locals(env_t *env, tagged_noun_t args, iter_t *iter) {
+  if (noun_get_type(args) == cell_type) {
+    env_compile_copy_args_to_locals(env, noun_get_left(args), iter);
+    env_compile_copy_args_to_locals(env, noun_get_right(args), iter);
+  } else {
+    jit_index_t index = (jit_index_t)noun_as_satom(args);
+    local_t *local = (local_t *)vec_get(&env->locals, index);
+    env->builder->CreateStore(iter->iter++, local->llvm_value);
+  }
+}
+#endif /* NOCK_LLVM */
+
+#if NOCK_LLVM
 void env_compile(env_t *env, jit_oper_t *oper) {
   llvm_t *llvm = machine->llvm;
-  env->builder = new IRBuilder<> (getGlobalContext());
 
-  // REVISIT: calling convention fastcc? (Function::setCallingConv())
+  iter_t iter = (iter_t){ .iter = env->function->arg_begin() };
+  env_compile_copy_args_to_locals(env, env->args_root, &iter);
+  // Set initial values for locals:
+  local_t *l_it = (local_t *)vec_get(&env->locals, 0);
+  local_t *l_end = l_it + vec_size(&env->locals);
+  for(; l_it != l_end; ++l_it)
+    if (NOUN_IS_DEFINED(l_it->initial_value))
+      env->builder->CreateStore(LLVM_NOUN(l_it->initial_value), l_it->llvm_value);
 
-  // Create argument list.
-  std::vector<Type*> params(2 /*ZZZ*/, llvm_tagged_noun_type());
-  
-  // Create function type.
-  FunctionType *functionType = FunctionType::get(llvm_tagged_noun_type(), params, false);
-  
-  // Create function.
-  env->function = Function::Create(functionType, Function::PrivateLinkage, std::string(""), llvm->module);
-
-  // Create basic block.
-  BasicBlock *block = BasicBlock::Create(getGlobalContext(), "entry", env->function);
-  env->builder->SetInsertPoint(block);
-
-  COMPILE(oper);
+  Value *body = COMPILE(oper);
   if (env->failed) return;
-
-  Function::arg_iterator iter = env->function->arg_begin();
-  Value *left = iter++;
-  Value *right = iter++;
-  Value *body = env->builder->CreateAdd(left, right, "addtmp");
 
   // Finish off the function.
   env->builder->CreateRet(body);
 
+  // Print the function.
+  env->function->dump();
+
   // Validate the generated code, checking for consistency.
-  ENV_CHECK_VOID(!verifyFunction(*(env->function), ReturnStatusAction), "Invalid function");
+  ENV_CHECK_VOID(!verifyFunction(*(env->function), /*ZZZ*/ AbortProcessAction), "Invalid function");
 
   // Print the function.
   env->function->dump();
@@ -1173,10 +1436,33 @@ void env_compile(env_t *env, jit_oper_t *oper) {
 #endif /* NOCK_LLVM */
 
 void env_prep(env_t *env, jit_oper_t *oper) {
+#if NOCK_LLVM
+  llvm_t *llvm = machine->llvm;
+  env->builder = new IRBuilder<> (getGlobalContext());
+
+  // REVISIT: calling convention fastcc? (Function::setCallingConv())
+
+  // Create argument list.
+  std::vector<Type*> params(1 /*ZZZ*/, llvm_tagged_noun_type());
+  
+  // Create function type.
+  FunctionType *functionType = FunctionType::get(llvm_tagged_noun_type(), params, false);
+  
+  // Create function.
+  env->function = Function::Create(functionType, Function::PrivateLinkage, /* anonymous */ std::string(""), llvm->module);
+
+  // Create basic block.
+  BasicBlock *block = BasicBlock::Create(getGlobalContext(), "entry", env->function);
+  env->builder->SetInsertPoint(block);
+#endif /* NOCK_LLVM */
+
   PREP(oper);
 
-  tagged_noun_t undef = _UNDEFINED;
-  vec_resize(&env->stack, env->max_stack_index + 1, &undef);
+  for (int i = 0; i <= env->max_stack_index; ++i) {
+    local_t local;
+    env_init_local(env, &local, "stack", i, _UNDEFINED);
+    vec_resize(&env->stack, i + 1, &local);
+  }
 }
 
 static jit_oper_t *dec_ast(env_t *env) {
@@ -1272,13 +1558,16 @@ static jit_oper_t *fib_ast(env_t *env) {
   return decl_as_oper(decl_f0_f1);
 }
 
-void test_jit(tagged_noun_t args) { //QQQ
+void test_jit(tagged_noun_t args) { //ZZZ
   // For testing, generate the AST that the pattern matcher *would*
   // generate when parsing "fib" in Nock:
 
   env_t *env = env_new();
-  bool do_fib = true;
+  bool do_fib = false;
   jit_oper_t *root = (do_fib ? fib_ast(env) : dec_ast(env));
+  
+  // ZZZ
+  // DUMP(root);
 
   env_prep(env, root);
 #if NOCK_LLVM
@@ -1286,7 +1575,7 @@ void test_jit(tagged_noun_t args) { //QQQ
 #endif
   tagged_noun_t result = env_eval(env, root, args);
 
-  // QQQ
+  // ZZZ
   if (env->failed) 
     ERROR0("Evaluation failed\n");
   else {

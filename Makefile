@@ -4,6 +4,8 @@
 
 # /opt/local/libexec/llvm-3.3/bin
 
+# ZZZ NOCK->ARKHAM
+
 SRC = src
 INCLUDE = include
 ifeq ($(origin FAST), undefined)

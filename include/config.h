@@ -1,12 +1,13 @@
 #if !defined(CONFIG_H)
 #define CONFIG_H
 
+// ZZZ NOCK->ARKHAM
 #define INLINE_REFS true // TODO
 #ifndef NOCK_PRODUCTION
 #define NOCK_PRODUCTION false
 #endif
 #define ALLOC_DEBUG (true && !NOCK_PRODUCTION)
-#define ALLOC_DEBUG_PRINT (false/*QQQ*/ && ALLOC_DEBUG)
+#define ALLOC_DEBUG_PRINT (true && ALLOC_DEBUG)
 #define SHARED_CELL_LIST_SIZE 0
 #define SHARED_CELL_LIST SHARED_CELL_LIST_SIZE > 0
 #define CELL_FREE_LIST_SIZE (ALLOC_DEBUG ? 0 : 16)
@@ -26,7 +27,7 @@
 #endif
 #define NOCK_STATS true
 #ifndef NOCK_LLVM
-#define NOCK_LLVM true//QQQ
+#define NOCK_LLVM true
 #endif
 #ifndef FAT_NOUNS
 #define FAT_NOUNS false

@@ -1564,7 +1564,7 @@ static void nock5k_run(int n_inputs, infile_t *inputs, bool trace_flag, bool int
     machine_set(&machine);
 
     if (true) { // ZZZ
-      test_jit(satom_as_noun(400000));
+      test_jit(satom_as_noun(10));
     } else {
     bool eof = false;
     do {

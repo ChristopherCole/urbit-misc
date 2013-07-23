@@ -2,9 +2,8 @@
  * Copyright 2013 Christopher Cole
  */
 
-// ZZZ NOCK5K_H->ARKHAM
-#if !defined(NOCK5K_H)
-#define NOCK5K_H
+#if !defined(ARKHAM_H)
+#define ARKHAM_H
 
 /* gmp.h likes to be included outside of any extern "C" blocks. */
 #include <gmp.h>
@@ -22,25 +21,25 @@ extern "C" {
 #include <config.h>
 #include <stdio.h>
 
-#define ASSERT(p, ...) do { if (NOCK_ASSERT && !(p)) fail(#p, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); } while(false)
-#define ASSERT0(p) do { if (NOCK_ASSERT && !(p)) fail(#p, __FILE__, __FUNCTION__, __LINE__, NULL); } while(false)
-#define CRASH(machine) crash(machine, "Crash: %s: %d\n", __FUNCTION__, __LINE__)
-#define IS_DEBUG (NOCK_LOG >= NOCK_DEBUG)
+#define ASSERT(p, ...) do { if (ARKHAM_ASSERT && !(p)) arkham_fail(#p, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); } while(false)
+#define ASSERT0(p) do { if (ARKHAM_ASSERT && !(p)) arkham_fail(#p, __FILE__, __FUNCTION__, __LINE__, NULL); } while(false)
+#define CRASH(machine) arkham_crash(machine, "Crash: %s: %d\n", __FUNCTION__, __LINE__)
+#define IS_DEBUG (ARKHAM_LOG >= ARKHAM_DEBUG)
 #define DEBUG_PREFIX "DEBUG:"
-#define DEBUG(f, ...) do { if (IS_DEBUG) nock_log(DEBUG_PREFIX " %s %s %d: " f, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); } while (false)
-#define DEBUG0(s) do { if (NOCK_LOG >= NOCK_DEBUG) nock_log(DEBUG_PREFIX " " s); } while (false)
-#define IS_INFO (NOCK_LOG >= NOCK_INFO)
+#define DEBUG(f, ...) do { if (IS_DEBUG) arkham_log(DEBUG_PREFIX " %s %s %d: " f, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); } while (false)
+#define DEBUG0(s) do { if (ARKHAM_LOG >= ARKHAM_DEBUG) arkham_log(DEBUG_PREFIX " " s); } while (false)
+#define IS_INFO (ARKHAM_LOG >= ARKHAM_INFO)
 #define INFO_PREFIX "INFO:"
-#define INFO(f, ...) do { if (IS_INFO) nock_log(INFO_PREFIX " %s %s %d: " f, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); } while (false)
-#define INFO0(s) do { if (NOCK_LOG >= NOCK_INFO) nock_log(INFO_PREFIX " " s); } while (false)
-#define IS_ERROR (NOCK_LOG >= NOCK_ERROR)
+#define INFO(f, ...) do { if (IS_INFO) arkham_log(INFO_PREFIX " %s %s %d: " f, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); } while (false)
+#define INFO0(s) do { if (ARKHAM_LOG >= ARKHAM_INFO) arkham_log(INFO_PREFIX " " s); } while (false)
+#define IS_ERROR (ARKHAM_LOG >= ARKHAM_ERROR)
 #define ERROR_PREFIX "ERROR:"
-#define ERROR(f, ...) do { if (IS_ERROR) nock_log(ERROR_PREFIX " %S %s %d: " f, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); } while (false)
-#define ERROR0(s) do { if (NOCK_LOG >= NOCK_ERROR) nock_log(ERROR_PREFIX " " s); } while (false)
-#define IS_WARN (NOCK_LOG >= NOCK_WARN)
+#define ERROR(f, ...) do { if (IS_ERROR) arkham_log(ERROR_PREFIX " %S %s %d: " f, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); } while (false)
+#define ERROR0(s) do { if (ARKHAM_LOG >= ARKHAM_ERROR) arkham_log(ERROR_PREFIX " " s); } while (false)
+#define IS_WARN (ARKHAM_LOG >= ARKHAM_WARN)
 #define WARN_PREFIX "WARN:"
-#define WARN(f, ...) do { if (IS_WARN) nock_log(WARN_PREFIX " %S %s %d: " f, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); } while (false)
-#define WARN0(s) do { if (NOCK_LOG >= NOCK_WARN) nock_log(WARN_PREFIX " " s); } while (false)
+#define WARN(f, ...) do { if (IS_WARN) arkham_log(WARN_PREFIX " %S %s %d: " f, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); } while (false)
+#define WARN0(s) do { if (ARKHAM_LOG >= ARKHAM_WARN) arkham_log(WARN_PREFIX " " s); } while (false)
 
 /* TODO: more details on noun/atom representation */
 
@@ -99,7 +98,7 @@ enum noun_type {
   satom_type
 };
 
-#if NOCK_LLVM
+#if ARKHAM_LLVM
 void llvm_init_global();
 
 struct llvm_s *llvm_new(const char *module_name);
@@ -116,11 +115,11 @@ typedef struct machine {
   struct fstack *stack;
   struct heap *heap;
   FILE *file;
-#if NOCK_LLVM
+#if ARKHAM_LLVM
   struct llvm_s *llvm;
 #endif
   bool trace_flag;
-#if NOCK_STATS
+#if ARKHAM_STATS
   unsigned long ops;
 #endif  
 } machine_t;
@@ -220,11 +219,11 @@ machine_t *machine_get();
 /* Sets the thread-local variable holding the pointer to the machine. */
 void machine_set(machine_t *m);
 
-void crash(machine_t *machine, const char *format, ...);
+void arkham_crash(machine_t *machine, const char *format, ...);
 
-void fail(const char *predicate, const char *file, const char *function, int line_number, const char *format, ...);
+void arkham_fail(const char *predicate, const char *file, const char *function, int line_number, const char *format, ...);
 
-void nock_log(const char *format, ...);
+void arkham_log(const char *format, ...);
 
 static inline enum noun_type
 noun_get_type(tagged_noun_t noun) {
@@ -385,4 +384,4 @@ void test_jit(tagged_noun_t args); //QQQ
 }
 #endif
 
-#endif /* #if !defined(NOCK5K_H) */
+#endif /* #if !defined(ARKHAM_H) */

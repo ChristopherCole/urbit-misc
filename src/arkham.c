@@ -25,7 +25,7 @@
 #endif
 
 void
-nock_log(const char *format, ...) {
+arkham_log(const char *format, ...) {
   va_list args;
   va_start(args, format);
   vfprintf(stdout, format, args);
@@ -33,7 +33,7 @@ nock_log(const char *format, ...) {
 }
 
 void
-fail(const char *predicate, const char *file, const char *function, int line_number, const char *format, ...) {
+arkham_fail(const char *predicate, const char *file, const char *function, int line_number, const char *format, ...) {
   fprintf(stderr, ERROR_PREFIX " Failed predicate: predicate = '%s', file = '%s', function = '%s', line = %d\n", predicate, file, function, line_number);
   if (format != NULL) {
     va_list args;
@@ -45,7 +45,7 @@ fail(const char *predicate, const char *file, const char *function, int line_num
 }
 
 static void
-usage(const char *format, ...) {
+arkham_usage(const char *format, ...) {
   if (format != NULL) {
     va_list args;
     va_start(args, format);
@@ -192,7 +192,7 @@ noun_type_to_string(enum noun_type noun_type)
 }
 
 typedef struct heap {
-#if NOCK_STATS
+#if ARKHAM_STATS
   unsigned long cell_alloc;
   unsigned long cell_free_list_alloc;
   unsigned long cell_free;
@@ -233,7 +233,7 @@ typedef struct heap {
 
 static void
 heap_print_stats(heap_t *heap, FILE *file) {
-#if NOCK_STATS
+#if ARKHAM_STATS
   fprintf(file, "cell_alloc=%lu\n", heap->cell_alloc);
   fprintf(file, "cell_free_list_alloc=%lu\n", heap->cell_free_list_alloc);
   fprintf(file, "cell_free=%lu\n", heap->cell_free);
@@ -276,7 +276,7 @@ heap_free_free_list(heap_t *heap) {
 #if !ALLOC_DEBUG
     free(heap->cell_free_list[(heap->cell_free_list_start + i) % CELL_FREE_LIST_SIZE]);
 #endif
-#if NOCK_STATS
+#if ARKHAM_STATS
     ++heap->cell_free;
 #endif
   }
@@ -310,13 +310,13 @@ heap_alloc_cell(heap_t *heap) {
     if (++heap->cell_free_list_start == CELL_FREE_LIST_SIZE)
       heap->cell_free_list_start = 0;
     --heap->cell_free_list_size;
-#if NOCK_STATS
+#if ARKHAM_STATS
     ++heap->cell_free_list_alloc;
 #endif
   } else {
 #endif
     cell = (cell_t *)calloc(1, sizeof(cell_t));
-#if NOCK_STATS
+#if ARKHAM_STATS
     ++heap->cell_alloc;
     int active_cell = heap->cell_alloc - heap->cell_free;
     if (active_cell > heap->cell_max) {
@@ -340,7 +340,7 @@ heap_alloc_cell(heap_t *heap) {
 
 static batom_t *
 heap_alloc_batom(heap_t *heap) {
-#if NOCK_STATS
+#if ARKHAM_STATS
   ++heap->batom_alloc;
   int active_batom = heap->batom_alloc - heap->batom_free;
   if (active_batom > heap->batom_max) {
@@ -368,7 +368,7 @@ heap_free_cell(heap_t *heap, cell_t *cell) {
   if (heap->cell_free_list_size < CELL_FREE_LIST_SIZE) {
     heap->cell_free_list[(heap->cell_free_list_start + heap->cell_free_list_size) % CELL_FREE_LIST_SIZE] = cell;
     ++heap->cell_free_list_size;
-#if NOCK_STATS
+#if ARKHAM_STATS
     ++heap->cell_free_list_free;
 #endif
   } else {
@@ -376,7 +376,7 @@ heap_free_cell(heap_t *heap, cell_t *cell) {
 #if !ALLOC_DEBUG
     free(cell);
 #endif
-#if NOCK_STATS
+#if ARKHAM_STATS
     ASSERT0(heap->cell_free < heap->cell_alloc);
     ++heap->cell_free;
 #endif
@@ -387,7 +387,7 @@ heap_free_cell(heap_t *heap, cell_t *cell) {
 
 static void
 heap_free_batom(heap_t *heap, batom_t *batom) {
-#if NOCK_STATS
+#if ARKHAM_STATS
   ASSERT0(heap->batom_free < heap->batom_alloc);
   ++heap->batom_free;
 #endif
@@ -471,19 +471,19 @@ noun_share(tagged_noun_t noun, heap_t *heap) {
 	  // Return early (avoid the reference counting cost):
 	  return noun;
 	}
-#if NOCK_STATS
+#if ARKHAM_STATS
 	else
 	  ++heap->cell_overflow_to_shared;
-#endif // NOCK_STATS
+#endif // ARKHAM_STATS
 #endif // SHARED_CELL_LIST
-#if NOCK_STATS
+#if ARKHAM_STATS
 	++heap->cell_shared;
 	++heap->cell_to_shared;
 	if (heap->cell_shared > heap->cell_max_shared)
 	  heap->cell_max_shared = heap->cell_shared;
 #endif
       } else {
-#if NOCK_STATS
+#if ARKHAM_STATS
 	++heap->batom_shared;
 	++heap->batom_to_shared;
 	if (heap->batom_shared > heap->batom_max_shared)
@@ -551,7 +551,7 @@ noun_unshare(tagged_noun_t noun, heap_t *heap, bool toplevel) {
 	heap_free_batom(heap, batom);
       }
     } else {
-#if NOCK_STATS
+#if ARKHAM_STATS
       if (refs == 2) {
 	if (type == cell_type) {
 	  --heap->cell_shared;
@@ -928,14 +928,14 @@ typedef struct frame { fn_t fn; tagged_noun_t data; } frame_t;
 typedef struct fstack { 
   size_t capacity; 
   size_t size; 
-#if NOCK_STATS
+#if ARKHAM_STATS
   size_t max_size;
 #endif
   frame_t frames[0];
 } fstack_t;
 
 void
-crash(machine_t *machine, const char *format, ...) {
+arkham_crash(machine_t *machine, const char *format, ...) {
     va_list args;
     va_start(args, format);
     vfprintf(stderr, format, args);
@@ -945,7 +945,7 @@ crash(machine_t *machine, const char *format, ...) {
 
 static void
 stack_print_stats(fstack_t *stack, FILE *file) {
-#if NOCK_STATS
+#if ARKHAM_STATS
   fprintf(file, "max_size=%lu\n", stack->max_size);
 #endif
 }
@@ -971,7 +971,7 @@ stack_push(fstack_t *stack, frame_t frame, bool share, heap_t *heap) {
     stack = (fstack_t *)realloc(stack, sizeof(fstack_t) + stack->capacity * sizeof(frame_t));
   }
   stack->frames[stack->size++] = frame;
-#if NOCK_STATS
+#if ARKHAM_STATS
   if (stack->size > stack->max_size)
     stack->max_size = stack->size;
 #endif
@@ -1312,7 +1312,7 @@ static tagged_noun_t nock5k_run_impl(machine_t *machine, enum op_t op, tagged_no
   call:
     TRACE();
 
-#if NOCK_STATS
+#if ARKHAM_STATS
     ++machine->ops;
 #endif
 
@@ -1549,13 +1549,13 @@ static void nock5k_run(int n_inputs, infile_t *inputs, bool trace_flag, bool int
       INFO0("Input file: standard input\n");
 
     machine_t machine;
-#if NOCK_STATS
+#if ARKHAM_STATS
     machine.ops = 0;
 #endif
     machine.heap = heap_new();
     alloc_atoms(machine.heap);
     machine.stack = stack_new(1);
-#if NOCK_LLVM
+#if ARKHAM_LLVM
     machine.llvm = llvm_new(module_name);
 #endif
     machine.file = stdout;
@@ -1579,7 +1579,7 @@ static void nock5k_run(int n_inputs, infile_t *inputs, bool trace_flag, bool int
 
     free_atoms(machine.heap);
     heap_free_free_list(machine.heap);
-#if NOCK_STATS
+#if ARKHAM_STATS
     printf("heap stats:\n");
     heap_print_stats(machine.heap, stdout);
     printf("stack stats:\n");
@@ -1587,7 +1587,7 @@ static void nock5k_run(int n_inputs, infile_t *inputs, bool trace_flag, bool int
     printf("op stats:\n");
     printf("ops=%lu\n", machine.ops);
 #endif
-#if NOCK_LLVM
+#if ARKHAM_LLVM
     llvm_delete(machine.llvm);
 #endif
     heap_free(machine.heap);
@@ -1605,13 +1605,13 @@ main(int argc, const char *argv[]) {
   mpz_init(SATOM_MAX_MPZ);
   mpz_set_ui(SATOM_MAX_MPZ, SATOM_MAX);
 
-#if NOCK_LLVM
+#if ARKHAM_LLVM
   llvm_init_global();
 #endif
 
   // REVISIT: use getopt?
 
-  const char *trace_env = getenv("NOCK_TRACE");
+  const char *trace_env = getenv("ARKHAM_TRACE");
   if (trace_env == NULL) trace_env = "false";
   bool trace = !(strcasecmp(trace_env, "no") == 0 || strcmp(trace_env, "0") == 0 || strcasecmp(trace_env, "false") == 0);
   bool interactive = false;
@@ -1620,7 +1620,7 @@ main(int argc, const char *argv[]) {
   for (int i = 1; i < argc; ++i) {
     const char *arg = argv[i];
     BEGIN_MATCH_STRING(arg);
-    STRCMP_CASE("--help", usage(NULL));
+    STRCMP_CASE("--help", arkham_usage(NULL));
     STRCMP_CASE("--interactive", interactive = true);
     STRCMP_CASE("-i", interactive = true);
     STRCMP_CASE("--enable-tracing", trace = true);
@@ -1628,9 +1628,9 @@ main(int argc, const char *argv[]) {
     STRCMP_CASE("-", { inputs[n_inputs].name = NULL; inputs[n_inputs].file = stdin; ++n_inputs; });
     TRUE_CASE(file, {
 	if (strncmp(file, "-", 1) == 0)
-	  usage("Unknown option: '%s'\n", file);
+	  arkham_usage("Unknown option: '%s'\n", file);
 	else
-	  { FILE *f = fopen(file, "r"); if (f != NULL) { inputs[n_inputs].name = file; inputs[n_inputs].file = f; ++n_inputs; } else usage("File not found: %s\n", file); }
+	  { FILE *f = fopen(file, "r"); if (f != NULL) { inputs[n_inputs].name = file; inputs[n_inputs].file = f; ++n_inputs; } else arkham_usage("File not found: %s\n", file); }
       });
     END_MATCH_STRING();
   }

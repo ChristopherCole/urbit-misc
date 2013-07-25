@@ -162,7 +162,7 @@ typedef struct machine {
 #define NOUN_IS_BATOM(noun) ((((noun) & (NOUN_NOT_SATOM_FLAG | NOUN_CELL_FLAG))) == NOUN_NOT_SATOM_FLAG)
 #define CELL_REF_NULL ((cell_ref_t)0)
 #define SATOM_MAX (((satom_t)SATOM_T_MAX)>>1)
-#define SATOM_OVERLOW_BIT (((satom_t)1)<<(sizeof(satom_t)*8-1))
+#define SATOM_OVERFLOW_BIT (((satom_t)1)<<(sizeof(satom_t)*8-1))
 #endif /* !FAT_NOUNS */
 
 #define _UNDEFINED BATOM_AS_NOUN(NULL)

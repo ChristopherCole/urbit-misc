@@ -722,7 +722,7 @@ atom_add(tagged_noun_t n1, tagged_noun_t n2) {
     if (sum >= sn1 && sum >= sn2)
       return satom_as_noun(sum);
 #else
-    if (sum & SATOM_OVERLOW_BIT)
+    if ((sum & SATOM_OVERFLOW_BIT) == 0)
       return satom_as_noun(sum);
 #endif
   }

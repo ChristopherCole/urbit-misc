@@ -25,6 +25,7 @@
 #include "llvm/ExecutionEngine/JITEventListener.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -80,10 +81,8 @@ public:
   }
 };
 
-#define ALLOC(t) ((t *)calloc(1, sizeof(t))) //XXX
-
 llvm_t *llvm_new(const char *module_name) {
-  llvm_t *llvm = ALLOC(llvm_t);//XXX
+  llvm_t *llvm = (llvm_t *)calloc(1, sizeof(llvm_t));
   LLVMContext &Context = getGlobalContext();
 
   llvm->module = new Module(module_name, Context);
@@ -853,7 +852,13 @@ namespace jit {
       }
 
       static Value *add_if_atoms(Environment *env, Value *left, Value *right) {
-	return env->builder->CreateAdd(left, right);
+	std::vector<Type*> parameter_types;
+	parameter_types.push_back(llvm_tagged_noun_type());
+	// REVISIT: cache function?
+	Function *add_with_overflow = Intrinsic::getDeclaration(machine->llvm->module, Intrinsic::uadd_with_overflow, parameter_types);
+	Value *result = env->builder->CreateCall2(add_with_overflow, left, right);
+	return env->builder->CreateExtractValue(result, 0);
+	//XXX: extract #1, if true normalize else fall through
       }
 
       static Value *add_if_not_atoms(Environment *env, Value *left, Value *right) {

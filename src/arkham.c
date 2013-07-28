@@ -53,7 +53,7 @@ arkham_usage(const char *format, ...) {
     va_end(args);
   }
 
-  fprintf(stderr, "%s", "Usage: nock5k [options] [<file1> <file2> ...]\n\n  --enable-tracing\n        turn tracing on\n  --disable-tracing\n        turn tracing off\n  --help\n        prints this usage text\n  <file1> <file2> ...\n        files to interpret (use \"-\" for standard input)\n");
+  fprintf(stderr, "%s", "Usage: arkham [options] [<file1> <file2> ...]\n\n  --enable-tracing\n        turn tracing on\n  --disable-tracing\n        turn tracing off\n  --help\n        prints this usage text\n  <file1> <file2> ...\n        files to interpret (use \"-\" for standard input)\n");
   exit(1);
 }
 
@@ -1295,7 +1295,7 @@ static fn_ret_t cond1(machine_t *machine, tagged_noun_t root) {
   return (fn_ret_t){ .root = next_root, .op = nock_op };
 }
 
-static tagged_noun_t nock5k_run_impl(machine_t *machine, enum op_t op, tagged_noun_t root) {
+static tagged_noun_t arkham_run_impl(machine_t *machine, enum op_t op, tagged_noun_t root) {
   heap_t *heap = machine->heap;
   FILE *file = machine->file;
   bool trace_flag = machine->trace_flag;
@@ -1540,7 +1540,7 @@ static void free_atoms(heap_t *heap) {
 #endif
 }
 
-static void nock5k_run(int n_inputs, infile_t *inputs, bool trace_flag, bool interactive_flag, const char *module_name) {
+static void arkham_run(int n_inputs, infile_t *inputs, bool trace_flag, bool interactive_flag, const char *module_name) {
   for (int i = 0; i < n_inputs; ++i) {
     infile_t *input = inputs + i;
     if (input->name != NULL) 
@@ -1572,7 +1572,7 @@ static void nock5k_run(int n_inputs, infile_t *inputs, bool trace_flag, bool int
       if (interactive_flag) printf("> ");
       tagged_noun_t top = parse(&machine, input, &eof);
       if (NOUN_IS_DEFINED(top)) {
-	noun_print(stdout, nock5k_run_impl(&machine, nock_op, top), true); printf("\n");
+	noun_print(stdout, arkham_run_impl(&machine, nock_op, top), true); printf("\n");
       }
     } while (interactive_flag && !eof);
     }
@@ -1639,5 +1639,5 @@ main(int argc, const char *argv[]) {
     inputs[n_inputs].name = NULL; inputs[n_inputs].file = stdin; ++n_inputs;
     interactive = true;
   }
-  nock5k_run(n_inputs, inputs, trace, interactive, argv[0]);
+  arkham_run(n_inputs, inputs, trace, interactive, argv[0]);
 }

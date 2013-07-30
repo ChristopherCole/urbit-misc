@@ -1564,7 +1564,9 @@ static void arkham_run(int n_inputs, infile_t *inputs, bool trace_flag, bool int
     machine_set(&machine);
 
     if (true) { // ZZZ
-      test_jit(satom_as_noun(10));
+      char *env = getenv("ARKHAM_ARG");
+      int arg = (env != NULL ? atoi(env) : 10);
+      test_jit(satom_as_noun(arg));
     } else {
     bool eof = false;
     do {

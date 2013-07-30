@@ -17,6 +17,8 @@
 #include <stdint.h>
 #include <inttypes.h>
 
+#include <vector>
+
 #if ARKHAM_LLVM
 #include "llvm/Analysis/Passes.h"
 #include "llvm/Analysis/Verifier.h"
@@ -57,6 +59,7 @@ typedef struct llvm_s {
   Module *module;
   ExecutionEngine *engine;
   FunctionPassManager *pass_manager;
+  Function *uadd_with_overflow;
 } llvm_t;
 #endif
 
@@ -107,6 +110,7 @@ llvm_t *llvm_new(const char *module_name) {
   std::vector<Type*> parameter_types;
   parameter_types.push_back(llvm_tagged_noun_type());
   FunctionType *function1_type = FunctionType::get(llvm_tagged_noun_type(), parameter_types, /* is_vararg */ false);
+  llvm->uadd_with_overflow = Intrinsic::getDeclaration(llvm->module, Intrinsic::uadd_with_overflow, parameter_types);
   parameter_types.push_back(llvm_tagged_noun_type());
   FunctionType *function2_type = FunctionType::get(llvm_tagged_noun_type(), parameter_types, /* is_vararg */ false);
 
@@ -547,7 +551,7 @@ namespace jit {
 
 #if ARKHAM_LLVM
 	compiled_fn_t fn = (compiled_fn_t)fp; //ZZZ
-	tagged_noun_t compiled_result = (fn)(args); // XXX: unshare?
+	tagged_noun_t compiled_result = (fn)(args); // ZZZ: unshare?
 	printf(">>> "); noun_print(stdout, compiled_result, true); printf("\n");
 #endif
     
@@ -653,55 +657,121 @@ namespace jit {
       }
     }; // class Environment
 
+#if ARKHAM_LLVM
+    typedef struct {
+      Value *value;
+      BasicBlock *block;
+    } incoming_t;
+#endif /* ARKHAM_LLVM */
+
+#if ARKHAM_LLVM
+    class IfThenElseBlocks {
+    public:
+      IfThenElseBlocks *parent;
+      BasicBlock *if_block;
+      BasicBlock *else_block;
+      BasicBlock *merge_block;
+      std::vector<incoming_t> incoming_to_else;
+      std::vector<incoming_t> incoming_to_merge;
+
+      IfThenElseBlocks(IfThenElseBlocks *parent) {
+	this->parent = parent;
+      }
+
+      void add_incoming_to_else(Value *value, BasicBlock *block) {
+	incoming_to_else.push_back((incoming_t){ .value = value, .block = block });
+      }
+
+      PHINode *begin(Environment *env, Type *type, std::vector<incoming_t> &incoming) {
+	size_t size = incoming.size();
+	if (size > 0) {
+	  PHINode *phi = env->builder->CreatePHI(type, size);
+	  int i = 0;
+	  for(std::vector<incoming_t>::iterator it = incoming.begin(); it != incoming.end(); ++it) {
+	    printf("phi->addIncoming: i=%d\n", i);
+	    it->value->dump();
+	    phi->addIncoming(it->value, it->block);
+	    ++i;
+	  }
+	  return phi;
+	} else 
+	  return NULL;
+      }
+
+      PHINode *begin_else(Environment *env, Type *type) {
+	return begin(env, type, incoming_to_else);
+      }
+
+      void add_incoming_to_merge(Value *value, BasicBlock *block) {
+	incoming_to_merge.push_back((incoming_t){ .value = value, .block = block });
+      }
+
+      PHINode *begin_merge(Environment *env, Type *type) {
+	return begin(env, type, incoming_to_merge);
+      }
+    };
+#endif /* ARKHAM_LLVM */
+
     class Expression : public Node {
       /* protected */ public:
       jit_index_t stack_index;
 
 #if ARKHAM_LLVM
-      typedef Value * (*if_atoms_fn_t)(Environment *env, Value *left, Value *right);
+      typedef Value * (*if_atoms_fn_t)(Environment *env, Value *left, Value *right, IfThenElseBlocks *blocks, bool *add_default_branch);
 #endif
 
 #if ARKHAM_LLVM
-      Value *if_then_else(Environment *env, Type *type, Value *left, Value *right, Value *test, if_atoms_fn_t if_atoms_fn, if_atoms_fn_t if_not_atoms_fn) {
+      static Value *if_else(Environment *env, const char *prefix, Type *type, Value *left, Value *right, Value *test, if_atoms_fn_t if_atoms_fn, if_atoms_fn_t if_not_atoms_fn, IfThenElseBlocks *parent_blocks) {
+	IfThenElseBlocks blocks(parent_blocks);
+	bool add_default_branch;
+	char buffer[strlen(prefix) + 7];
 
-	BasicBlock *then_block = BasicBlock::Create(getGlobalContext(), "if_then", env->function);
-	BasicBlock *else_block = BasicBlock::Create(getGlobalContext(), "if_else");
-	BasicBlock *merge_block = BasicBlock::Create(getGlobalContext(), "if_merge");
+	snprintf(buffer, sizeof(buffer), "%s.if", prefix);
+	blocks.if_block = BasicBlock::Create(getGlobalContext(), buffer, env->function);
+	snprintf(buffer, sizeof(buffer), "%s.else", prefix);
+	blocks.else_block = BasicBlock::Create(getGlobalContext(), buffer);
+	snprintf(buffer, sizeof(buffer), "%s.merge", prefix);
+	blocks.merge_block = BasicBlock::Create(getGlobalContext(), buffer);
 
-	env->builder->CreateCondBr(test, then_block, else_block);
+	blocks.add_incoming_to_else(UndefValue::get(llvm_tagged_noun_type()), env->builder->GetInsertBlock());
+	env->builder->CreateCondBr(test, blocks.if_block, blocks.else_block);
 
 	// Emit 'then' value.
-	env->builder->SetInsertPoint(then_block);
-	Value *then_value = if_atoms_fn(env, left, right);
-	env->builder->CreateBr(merge_block);
-	// Codegen of 'then' can change the current block, update then_block for the PHI.
-	then_block = env->builder->GetInsertBlock();
+	env->builder->SetInsertPoint(blocks.if_block);
+	add_default_branch = true;
+	Value *if_value = if_atoms_fn(env, left, right, &blocks, &add_default_branch);
+	// Codegen of 'then' can change the current block, update if_block for the PHI.
+	blocks.if_block = env->builder->GetInsertBlock();
+	if (add_default_branch) {
+	  blocks.add_incoming_to_merge(if_value, blocks.if_block);
+	  env->builder->CreateBr(blocks.merge_block);
+	}
 
 	// Emit 'else' block.
-	env->function->getBasicBlockList().push_back(else_block);
-	env->builder->SetInsertPoint(else_block);
-	Value *else_value = if_not_atoms_fn(env, left, right);
-	env->builder->CreateBr(merge_block);
+	env->function->getBasicBlockList().push_back(blocks.else_block);
+	env->builder->SetInsertPoint(blocks.else_block);
+	blocks.begin_else(env, llvm_tagged_noun_type());
+	add_default_branch = true;
+	Value *else_value = if_not_atoms_fn(env, left, right, &blocks, &add_default_branch);
 	// Codegen of 'else' can change the current block, update else_block for the PHI.
-	else_block = env->builder->GetInsertBlock();
+	blocks.else_block = env->builder->GetInsertBlock();
+	if (add_default_branch) {
+	  blocks.add_incoming_to_merge(else_value, blocks.else_block);
+	  env->builder->CreateBr(blocks.merge_block);
+	}
 
 	// Emit 'merge' block.
-	env->function->getBasicBlockList().push_back(merge_block);
-	env->builder->SetInsertPoint(merge_block);
-	PHINode *phi = env->builder->CreatePHI(type, 2);
-
-	phi->addIncoming(then_value, then_block);
-	phi->addIncoming(else_value, else_block);
-
-	return phi;
+	env->function->getBasicBlockList().push_back(blocks.merge_block);
+	env->builder->SetInsertPoint(blocks.merge_block);
+	return blocks.begin_merge(env, type);
       }
 
-      Value *if_atoms(Environment *env, Type *type, Value *left, Value *right, if_atoms_fn_t if_atoms_fn, if_atoms_fn_t if_not_atoms_fn) {
+      static Value *if_atoms(Environment *env, const char *prefix, Type *type, Value *left, Value *right, if_atoms_fn_t if_atoms_fn, if_atoms_fn_t if_not_atoms_fn) {
 	Value *both = env->builder->CreateOr(left, right);
 	Value *low_bit = env->builder->CreateAnd(both, LLVM_NOUN(1));
 	Value *test = env->builder->CreateICmpEQ(low_bit, LLVM_NOUN(0));
 
-	return if_then_else(env, type, left, right, test, if_atoms_fn, if_not_atoms_fn);
+	return if_else(env, prefix, type, left, right, test, if_atoms_fn, if_not_atoms_fn, /* parent_blocks */ NULL);
       }
 #endif
     };
@@ -843,25 +913,33 @@ namespace jit {
       }
 
 #if ARKHAM_LLVM
-      static Value *eq_if_atoms(Environment *env, Value *left, Value *right) {
+      static Value *eq_if_atoms(Environment *env, Value *left, Value *right, IfThenElseBlocks *blocks, bool *add_default_branch) {
 	return env->builder->CreateICmpEQ(left, right);
       }
 
-      static Value *eq_if_not_atoms(Environment *env, Value *left, Value *right) {
+      static Value *eq_if_not_atoms(Environment *env, Value *left, Value *right, IfThenElseBlocks *blocks, bool *add_default_branch) {
 	return env->builder->CreateICmpEQ(env->builder->CreateCall2(machine->llvm->module->getFunction("atom_equals"), left, right), LLVM_NOUN(_YES));
       }
 
-      static Value *add_if_atoms(Environment *env, Value *left, Value *right) {
-	std::vector<Type*> parameter_types;
-	parameter_types.push_back(llvm_tagged_noun_type());
-	// REVISIT: cache function?
-	Function *add_with_overflow = Intrinsic::getDeclaration(machine->llvm->module, Intrinsic::uadd_with_overflow, parameter_types);
-	Value *result = env->builder->CreateCall2(add_with_overflow, left, right);
-	return env->builder->CreateExtractValue(result, 0);
-	//XXX: extract #1, if true normalize else fall through
+      static Value *if_overflow(Environment *env, Value *sum, Value *unused, IfThenElseBlocks *blocks, bool *add_default_branch) {
+	blocks->parent->add_incoming_to_else(UndefValue::get(llvm_tagged_noun_type()), blocks->if_block);
+	env->builder->CreateBr(blocks->parent->else_block);
+	*add_default_branch = false;
+	return sum;
       }
 
-      static Value *add_if_not_atoms(Environment *env, Value *left, Value *right) {
+      static Value *if_not_overflow(Environment *env, Value *sum, Value *unused, IfThenElseBlocks *blocks, bool *add_default_branch) {
+      	return sum;
+      }
+
+      static Value *add_if_atoms(Environment *env, Value *left, Value *right, IfThenElseBlocks *blocks, bool *add_default_branch) {
+	Value *result = env->builder->CreateCall2(machine->llvm->uadd_with_overflow, left, right);
+	Value *sum = env->builder->CreateExtractValue(result, 0);
+	Value *overflow = env->builder->CreateExtractValue(result, 1);
+	return if_else(env, "add.check.overflow", llvm_tagged_noun_type(), sum, NULL, overflow, if_overflow, if_not_overflow, /* parent_blocks */ blocks);
+      }
+
+      static Value *add_if_not_atoms(Environment *env, Value *left, Value *right, IfThenElseBlocks *blocks, bool *add_default_branch) {
 	return env->builder->CreateCall2(machine->llvm->module->getFunction("atom_add"), left, right);
       }
 
@@ -873,9 +951,9 @@ namespace jit {
     
 	switch (type) {
 	case binop_eq_type: 
-	  return if_atoms(env, Type::getInt1Ty(getGlobalContext()), left, right, eq_if_atoms, eq_if_not_atoms);
+	  return if_atoms(env, "eq", Type::getInt1Ty(getGlobalContext()), left, right, eq_if_atoms, eq_if_not_atoms);
 	case binop_add_type:
-	  return if_atoms(env, llvm_tagged_noun_type(), left, right, add_if_atoms, add_if_not_atoms);
+	  return if_atoms(env, "add", llvm_tagged_noun_type(), left, right, add_if_atoms, add_if_not_atoms);
 	}
     
 	return NULL;
@@ -951,11 +1029,11 @@ namespace jit {
       }
 
 #if ARKHAM_LLVM
-      static Value *inc_if_atoms(Environment *env, Value *subexpr, Value *unused) {
+      static Value *inc_if_atoms(Environment *env, Value *subexpr, Value *unused, IfThenElseBlocks *blocks, bool *add_default_branch) {
 	return env->builder->CreateAdd(subexpr, LLVM_NOUN(_1));
       }
   
-      static Value *inc_if_not_atoms(Environment *env, Value *subexpr, Value *unused) {
+      static Value *inc_if_not_atoms(Environment *env, Value *subexpr, Value *unused, IfThenElseBlocks *blocks, bool *add_default_branch) {
 	return env->builder->CreateCall(machine->llvm->module->getFunction("atom_increment"), subexpr);
       }
 
@@ -963,7 +1041,7 @@ namespace jit {
 	Value *subexpr_value = subexpr->compile(env);
 	Value *test = env->builder->CreateICmpULT(subexpr_value, LLVM_NOUN(satom_as_noun(SATOM_MAX)));
     
-	return if_then_else(env, llvm_tagged_noun_type(), subexpr_value, NULL, test, inc_if_atoms, inc_if_not_atoms);
+	return if_else(env, "inc", llvm_tagged_noun_type(), subexpr_value, NULL, test, inc_if_atoms, inc_if_not_atoms, /* parent_blocks */ NULL);
       }
 #endif /* ARKHAM_LLVM */
 

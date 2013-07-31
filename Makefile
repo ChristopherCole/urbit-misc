@@ -26,9 +26,11 @@ endif
 
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
+  CC_FLAGS = -std=c99
   CXX_LINK_FLAGS = -lstdc++
 endif
 ifeq ($(UNAME_S),Darwin)
+  CC_FLAGS =
   CXX_LINK_FLAGS = -lc++
 endif
 
@@ -38,7 +40,7 @@ arkham: build/bin arkham.o jit.o
 	$(CXX) ${OPT} -o build/bin/arkham build/bin/arkham.o build/bin/jit.o -lgmp ${LLVM_LINK_FLAGS} ${CXX_LINK_FLAGS}
 
 arkham.o: build/bin ${SRC}/arkham.c
-	$(CC) -DARKHAM_PRODUCTION=${ARKHAM_PRODUCTION} -DARKHAM_LLVM=${ARKHAM_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/arkham.c -o build/bin/arkham.o
+	$(CC) -DARKHAM_PRODUCTION=${ARKHAM_PRODUCTION} -DARKHAM_LLVM=${ARKHAM_LLVM} ${CC_FLAGS} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/arkham.c -o build/bin/arkham.o
 
 jit.o: build/bin ${SRC}/jit.cpp
 	$(CXX) -DARKHAM_PRODUCTION=${ARKHAM_PRODUCTION} -DARKHAM_LLVM=${ARKHAM_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/jit.cpp -o build/bin/jit.o

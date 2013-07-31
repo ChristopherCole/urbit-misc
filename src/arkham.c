@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <strings.h>
 #include <inttypes.h>
 #include <gmp.h>
 

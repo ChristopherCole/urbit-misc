@@ -80,7 +80,19 @@ public:
   virtual void NotifyFunctionEmitted(const Function &function,
 				     void *data, size_t size,
 				     const EmittedFunctionDetails &details) {
+    // llvm-mc -disassemble -triple=x86_64-pc-linux-gnu < /tmp/disasm
+    static char hex[] = "0123456789abcdef";
     INFO("%s %p %lu\n", __FUNCTION__, data, size);
+    char *instructions = static_cast<char *>(data);
+    FILE *fp = fopen("/tmp/disasm", "w");
+    for (int i = 0; i < size; ++i) {
+      if (i > 0)
+	fprintf(fp, " ");
+      char instruction = instructions[i];
+      fprintf(fp, "0x%c%c", hex[(instruction >> 4) & 0xf], hex[instruction & 0xf]);
+    }
+    fprintf(fp, "\n");
+    fclose(fp);
   }
 };
 
@@ -161,6 +173,7 @@ void machine_set(machine_t *m) {
   machine = m;
 }
 
+//ZZZ
 extern tagged_noun_t
 fib(tagged_noun_t n) {
   ASSERT(noun_is_valid_atom(n, machine->heap), "noun_is_valid_atom(n, machine->heap)\n");
@@ -192,14 +205,16 @@ fib(tagged_noun_t n) {
 // Addresses a node in a tree: an argument to the slash operator.
 typedef uint32_t jit_address_t;
 #define JIT_ADDRESS_FMT PRIu32
-#define JIT_ADDRESS_MAX UINT32_MAX
+#define JIT_ADDRESS_MAX (UINT32_MAX-1)
+#define JIT_ADDRESS_UNDEFINED UINT32_MAX
 
 // An index into the local variable list.
 typedef uint32_t jit_index_t;
 #define JIT_INDEX_FMT PRIu32
-#define JIT_INDEX_MAX UINT32_MAX
+#define JIT_INDEX_MAX (UINT32_MAX-1)
+#define JIT_INDEX_UNDEFINED UINT32_MAX
 
-// Shouldn't be too big (uint16 is way overkill).
+// Shouldn't be too big (uint16 is overkill).
 #define JIT_STACK_MAX UINT16_MAX
 
 typedef tagged_noun_t (*compiled_fn_t)(tagged_noun_t noun);//ZZZ
@@ -782,6 +797,53 @@ namespace jit {
       tagged_noun_t local_variable_initial_values;
       tagged_noun_t local_variable_index_map;
 
+    private:
+      jit_address_t get_root_address(tagged_noun_t env_local_variable_index_map, jit_address_t address) {
+	if (NOUN_EQUALS(local_variable_index_map, env_local_variable_index_map)) {
+	  return address;
+	} else if (noun_get_type(env_local_variable_index_map) == cell_type) {
+	  jit_address_t left_address = get_root_address(noun_get_left(env_local_variable_index_map), address * 2);
+	  if (left_address != JIT_ADDRESS_UNDEFINED)
+	    return left_address;
+	  else
+	    return get_root_address(noun_get_right(env_local_variable_index_map), address * 2 + 1);
+	} else
+	  return JIT_ADDRESS_UNDEFINED;
+      }
+
+      void dump_impl(Environment *env, FILE *fp, int indent, tagged_noun_t local_variable_initial_values, jit_address_t address) {
+	if (noun_get_type(local_variable_initial_values) == cell_type) {
+	  dump_impl(env, fp, indent, noun_get_left(local_variable_initial_values), address * 2);
+	  dump_impl(env, fp, indent, noun_get_right(local_variable_initial_values), address * 2 + 1);
+	} else {
+	  // Allocate a local variable slot for a declared variable:
+	  env->indent(fp, indent + 1);
+	  fprintf(fp, "store(@%" JIT_ADDRESS_FMT ", %" SATOM_FMT ")\n", address, noun_as_satom(local_variable_initial_values));
+	}
+      }
+
+      tagged_noun_t prep_impl(Environment *env, tagged_noun_t local_variable_initial_values) {
+	if (noun_get_type(local_variable_initial_values) == cell_type) {
+	  tagged_noun_t left = prep_impl(env, noun_get_left(local_variable_initial_values));
+	  tagged_noun_t right = prep_impl(env, noun_get_right(local_variable_initial_values));
+	  return cell_new(machine->heap, left, right);
+	} else {
+	  // Allocate a local variable slot for a declared variable:
+	  return satom_as_noun(env->allocate_local(local_variable_initial_values));
+	}
+      }
+
+      void eval_impl(Environment *env, tagged_noun_t local_variable_initial_values, tagged_noun_t local_variable_index_map) {
+	if (noun_get_type(local_variable_initial_values) == cell_type) {
+	  eval_impl(env, noun_get_left(local_variable_initial_values), noun_get_left(local_variable_index_map));
+	  eval_impl(env, noun_get_right(local_variable_initial_values), noun_get_right(local_variable_index_map));
+	} else {
+	  satom_t index = noun_as_satom(local_variable_index_map);
+	  ENV_CHECK_VOID(env, index <= JIT_INDEX_MAX, "Invalid index");
+	  env->initialize_local((jit_index_t)index, local_variable_initial_values);
+	}
+      }
+
     public:
       Declaration(tagged_noun_t local_variable_initial_values) {
 	SHARE(local_variable_initial_values, AST_OWNER);
@@ -796,20 +858,9 @@ namespace jit {
 	delete inner;
       }
 
-      tagged_noun_t prep_impl(Environment *env, tagged_noun_t local_variable_initial_values) {
-	if (noun_get_type(local_variable_initial_values) == cell_type) {
-	  tagged_noun_t left = prep_impl(env, noun_get_left(local_variable_initial_values));
-	  tagged_noun_t right = prep_impl(env, noun_get_right(local_variable_initial_values));
-	  return cell_new(machine->heap, left, right);
-	} else {
-	  // Allocate a local variable slot for a declared variable:
-	  return satom_as_noun(env->allocate_local(local_variable_initial_values));
-	}
-      }
-
       void dump(Environment *env, FILE *fp, int indent) {
 	if (env->failed) return;
-	env->indent(fp, indent); fprintf(fp, "decl(\n");
+	env->indent(fp, indent); fprintf(fp, "declare(\n"); dump_impl(env, fp, indent, local_variable_initial_values, get_root_address(env->local_variable_index_map, 1));
 	inner->dump(env, fp, indent + 1);
 	env->indent(fp, indent); fprintf(fp, ")\n");
       }
@@ -832,17 +883,6 @@ namespace jit {
 	return inner->compile(env);
       }
 #endif /* ARKHAM_LLVM */
-
-      void eval_impl(Environment *env, tagged_noun_t local_variable_initial_values, tagged_noun_t local_variable_index_map) {
-	if (noun_get_type(local_variable_initial_values) == cell_type) {
-	  eval_impl(env, noun_get_left(local_variable_initial_values), noun_get_left(local_variable_index_map));
-	  eval_impl(env, noun_get_right(local_variable_initial_values), noun_get_right(local_variable_index_map));
-	} else {
-	  satom_t index = noun_as_satom(local_variable_index_map);
-	  ENV_CHECK_VOID(env, index <= JIT_INDEX_MAX, "Invalid index");
-	  env->initialize_local((jit_index_t)index, local_variable_initial_values);
-	}
-      }
 
       void eval(Environment *env) {
 	if (env->failed) return;
@@ -1064,7 +1104,7 @@ namespace jit {
       void dump(Environment *env, FILE *fp, int indent) {
 	if (env->failed) return;
     
-	env->indent(fp, indent); fprintf(fp, "load(%" JIT_ADDRESS_FMT ")", address);
+	env->indent(fp, indent); fprintf(fp, "load(@%" JIT_ADDRESS_FMT ")", address);
       }
 
       void prep(Environment *env) {
@@ -1110,7 +1150,7 @@ namespace jit {
     
 	env->indent(fp, indent); fprintf(fp, "store(");
 	subexpr->dump(env, fp, -1);
-	fprintf(fp, ", %" JIT_ADDRESS_FMT ")", address);
+	fprintf(fp, ", @%" JIT_ADDRESS_FMT ")", address);
       }
 
       void prep(Environment *env) {
@@ -1173,11 +1213,12 @@ namespace jit {
       void dump(Environment *env, FILE *fp, int indent) {
 	if (env->failed) return;
 
-	env->indent(fp, indent); fprintf(fp, "while(\n");
-	env->indent(fp, indent+ 1); test->dump(env, fp, -1);
-	fprintf(fp, "\n"); env->indent(fp, indent); fprintf(fp, ")\n");
-	env->indent(fp, indent); fprintf(fp, "do(\n");
-	env->indent(fp, indent + 1); 
+	env->indent(fp, indent); fprintf(fp, "loop(\n");
+	env->indent(fp, indent + 1); fprintf(fp, "while(\n");
+	env->indent(fp, indent + 2); test->dump(env, fp, -1);
+	fprintf(fp, "\n"); env->indent(fp, indent + 1); fprintf(fp, ")\n");
+	env->indent(fp, indent + 1); fprintf(fp, "do(\n");
+	env->indent(fp, indent + 2); 
 
 	for(std::vector<Store *>::iterator it = stores.begin(); it != stores.end(); ++it) {
 	  if (it != stores.begin())
@@ -1185,10 +1226,11 @@ namespace jit {
 	  (*it)->dump(env, fp, -1);
 	}
 
-	fprintf(fp, "\n"); env->indent(fp, indent); fprintf(fp, ")\n");
-	env->indent(fp, indent); fprintf(fp, "done(\n");
-	env->indent(fp, indent + 1); result->dump(env, fp, -1);
-	fprintf(fp, "\n"); env->indent(fp, indent); fprintf(fp, ")\n");
+	fprintf(fp, "\n"); env->indent(fp, indent + 1); fprintf(fp, ")\n");
+	env->indent(fp, indent + 1); fprintf(fp, "done(\n");
+	env->indent(fp, indent + 2); result->dump(env, fp, -1);	fprintf(fp, "\n");
+	env->indent(fp, indent + 1); fprintf(fp, ")\n");
+	env->indent(fp, indent); fprintf(fp, ")\n");
       }
 
       void prep(Environment *env) {
@@ -1406,12 +1448,14 @@ void test_jit(tagged_noun_t args) { //ZZZ
   bool do_fib = true;
   Node *root = (do_fib ? fib_ast(env) : dec_ast(env));
   
+  env->prep(root);
+
   root->dump(env, machine->file, 0);
 
-  env->prep(root);
 #if ARKHAM_LLVM
   env->compile(root);
 #endif
+
   tagged_noun_t result = env->eval(root, args);
 
   // ZZZ

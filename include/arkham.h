@@ -22,7 +22,9 @@ extern "C" {
 #include <stdio.h>
 
 #define ASSERT(p, ...) do { if (ARKHAM_ASSERT && !(p)) arkham_fail(#p, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); } while(false)
+#define FAIL(p, ...) do { if (!(p)) arkham_fail(#p, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); } while(false)
 #define ASSERT0(p) do { if (ARKHAM_ASSERT && !(p)) arkham_fail(#p, __FILE__, __FUNCTION__, __LINE__, NULL); } while(false)
+#define FAIL0(p) do { if (!(p)) arkham_fail(#p, __FILE__, __FUNCTION__, __LINE__, NULL); } while(false)
 #define CRASH(machine) arkham_crash(machine, "Crash: %s: %d\n", __FUNCTION__, __LINE__)
 #define IS_DEBUG (ARKHAM_LOG >= ARKHAM_DEBUG)
 #define DEBUG_PREFIX "DEBUG:"
@@ -40,6 +42,12 @@ extern "C" {
 #define WARN_PREFIX "WARN:"
 #define WARN(f, ...) do { if (IS_WARN) arkham_log(WARN_PREFIX " %S %s %d: " f, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); } while (false)
 #define WARN0(s) do { if (ARKHAM_LOG >= ARKHAM_WARN) arkham_log(WARN_PREFIX " " s); } while (false)
+
+#if ARKHAM_URC
+#define URC_INLINE inline
+#else
+#define URC_INLINE
+#endif
 
 /* TODO: more details on noun/atom representation */
 
@@ -144,7 +152,6 @@ typedef struct machine {
 #define NOUN_IS_SATOM(noun) (((noun).flags & NOUN_SATOM_FLAG) == NOUN_SATOM_FLAG)
 #define NOUN_IS_BATOM(noun) (((base_t *)((NOUN_AS_BASE(noun))->left)) == NOUN_AS_BASE(noun))
 #define NOUN_IS_CELL(noun) (((base_t *)((NOUN_AS_BASE(noun))->left)) != NOUN_AS_BASE(noun))
-#define CELL_REF_NULL NULL
 #define SATOM_MAX ((satom_t)SATOM_T_MAX)
 #else /* !FAT_NOUNS */
 #define NOUN_NOT_SATOM_FLAG 1
@@ -160,7 +167,6 @@ typedef struct machine {
 #define NOUN_IS_SATOM(noun) ((((noun) & NOUN_NOT_SATOM_FLAG)) == 0)
 #define NOUN_IS_CELL(noun) ((((noun) & (NOUN_NOT_SATOM_FLAG | NOUN_CELL_FLAG))) == (NOUN_NOT_SATOM_FLAG | NOUN_CELL_FLAG))
 #define NOUN_IS_BATOM(noun) ((((noun) & (NOUN_NOT_SATOM_FLAG | NOUN_CELL_FLAG))) == NOUN_NOT_SATOM_FLAG)
-#define CELL_REF_NULL ((cell_ref_t)0)
 #define SATOM_MAX (((satom_t)SATOM_T_MAX)>>1)
 #define SATOM_OVERFLOW_BIT (((satom_t)1)<<(sizeof(satom_t)*8-1))
 #endif /* !FAT_NOUNS */
@@ -172,7 +178,6 @@ typedef struct machine {
 #define NOUN_IS_DEFINED(noun) !NOUN_IS_UNDEFINED(noun)
 #define CELL(left, right) cell_new(heap, left, right)
 
-#if ALLOC_DEBUG
 /* Owners from the "root set": */
 #define STACK_OWNER ((base_t *)1) /* For the stack */
 #define ROOT_OWNER ((base_t *)2) /* For interpreter locals */
@@ -181,7 +186,6 @@ typedef struct machine {
 #define ENV_OWNER ((base_t *)5) /* For the environment during compilation */
 #define AST_OWNER ((base_t *)6) /* For the AST during compilation */
 #define LOCALS_OWNER ((base_t *)7) /* For the local variables during abstract interpretation */
-#endif
 
 #if NO_SATOMS
 extern tagged_noun_t _UNDEFINED;

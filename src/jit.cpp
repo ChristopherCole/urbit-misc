@@ -180,13 +180,22 @@ fib(tagged_noun_t n) {
   }
 }
 
-#if ALLOC_DEBUG
+static inline tagged_noun_t
+noun_nop(tagged_noun_t noun) {
+  return noun;
+}
+
+#if ARKHAM_URC
+#define SHARE(noun, o) noun_nop(noun)
+#define UNSHARE(noun, o)
+#elif ALLOC_DEBUG
 #define SHARE(noun, o) noun_share(noun, machine->heap, o)
 #define UNSHARE(noun, o) noun_unshare(noun, machine->heap, true, o)
-#else
+#else /* #if !ARKHAM_URC && !ALLOC_DEBUG */
 #define SHARE(noun, o) noun_share(noun, machine->heap)
 #define UNSHARE(noun, o) noun_unshare(noun, machine->heap, true)
-#endif
+#endif /* #if ARKHAM_URC */
+
 #define ASSIGN(l, r, o) do { tagged_noun_t old = l; l = SHARE(r, o) ; UNSHARE(old, o); } while (false)
 
 // Addresses a node in a tree: an argument to the slash operator.
@@ -1245,9 +1254,9 @@ namespace jit {
       Value *compile(Environment *env) {
 	BasicBlock *incoming_block = env->builder->GetInsertBlock();
 
-	BasicBlock *test_block = BasicBlock::Create(getGlobalContext(), "loop_test", env->function);
-	BasicBlock *next_block = BasicBlock::Create(getGlobalContext(), "loop_next");
-	BasicBlock *done_block = BasicBlock::Create(getGlobalContext(), "loop_done");
+	BasicBlock *test_block = BasicBlock::Create(getGlobalContext(), "loop.test", env->function);
+	BasicBlock *next_block = BasicBlock::Create(getGlobalContext(), "loop.next");
+	BasicBlock *done_block = BasicBlock::Create(getGlobalContext(), "loop.done");
 
 	// Insert an explicit fall through from the current block to the loop.
 	env->builder->CreateBr(test_block);

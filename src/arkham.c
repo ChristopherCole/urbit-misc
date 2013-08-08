@@ -9,20 +9,31 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <inttypes.h>
+#include <sys/errno.h>
+#include <sys/mman.h>
 #include <gmp.h>
 
 #include "arkham.h"
 
-#if ALLOC_DEBUG
+static inline tagged_noun_t
+noun_nop(tagged_noun_t noun) {
+  return noun;
+}
+
+#if ARKHAM_URC
+#define SHARE(noun, o) noun_nop(noun)
+#define UNSHARE(noun, o)
+#define UNSHARE_CHILD(noun, o)
+#elif ALLOC_DEBUG
 /* When doing allocation debugging we need ownership information: */
 #define SHARE(noun, o) noun_share(noun, heap, o)
 #define UNSHARE(noun, o) noun_unshare(noun, heap, true, o)
 #define UNSHARE_CHILD(noun, o) noun_unshare(noun, heap, false, o)
-#else
+#else /* #if !ARKHAM_URC && !ALLOC_DEBUG */
 #define SHARE(noun, o) noun_share(noun, heap)
 #define UNSHARE(noun, o) noun_unshare(noun, heap, true)
 #define UNSHARE_CHILD(noun, o) noun_unshare(noun, heap, false)
-#endif
+#endif /* #if ARKHAM_URC */
 
 void
 arkham_log(const char *format, ...) {
@@ -57,15 +68,21 @@ arkham_usage(const char *format, ...) {
   exit(1);
 }
 
-void vec_init(vec_t *vec, size_t elem_size) {
+static void vec_init_impl(vec_t *vec, size_t elem_size) {
   vec->elem_size = elem_size;
   vec->elem_capacity = 0;
+}
+
+void vec_init(vec_t *vec, size_t elem_size) {
+  memset(vec, 0, sizeof(vec_t));
+
+  vec_init_impl(vec, elem_size);
 }
 
 vec_t *vec_new(size_t elem_size) {
   vec_t *vec = (vec_t *)calloc(1, sizeof(vec_t));
 
-  vec_init(vec, elem_size);
+  vec_init_impl(vec, elem_size);
 
   return vec;
 }
@@ -179,7 +196,7 @@ base_remove_owner(base_t *base, base_t *owner) {
   }
   ASSERT(false, "Couldn't remove owner\n");
 }
-#endif
+#endif /* #if ALLOC_DEBUG */
 
 const char *
 noun_type_to_string(enum noun_type noun_type)
@@ -212,6 +229,11 @@ typedef struct heap {
   unsigned long batom_to_shared;
   unsigned long batom_to_unshared;
 #endif
+#if ARKHAM_URC
+  char *nursery_start;
+  char *nursery_current;
+  char *nursery_end;
+#endif /* ARKHAM_URC */
 #if ALLOC_DEBUG
   // A linked list of all allocated cells:
   unsigned long current_id;
@@ -263,9 +285,27 @@ heap_print_stats(heap_t *heap, FILE *file) {
 #endif
 }
 
+#if ARKHAM_URC
+#define NURSERY_SIZE (512 * 1024 * 1024)
+#endif
+
 static heap_t *
 heap_new() {
-  heap_t *heap = (heap_t *)calloc(1, sizeof(heap_t));
+  heap_t *heap;
+#if ARKHAM_URC
+  void *mapped = mmap(NULL, NURSERY_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+  FAIL(mapped != MAP_FAILED, "Memory map failed: size = %lu, errno = %d, error = %s\n", (size_t)NURSERY_SIZE, errno, strerror(errno));
+  heap = (heap_t *)mapped;
+#else /* #if !ARKHAM_URC */
+  heap = (heap_t *)calloc(1, sizeof(heap_t));
+#endif /* #if ARKHAM_URC */
+#if ARKHAM_URC
+  heap->nursery_start = ((char *)heap) + sizeof(heap_t);
+  heap->nursery_current = heap->nursery_start;
+#if ARKHAM_ASSERT
+  heap->nursery_end = ((char *)heap) + NURSERY_SIZE;
+#endif
+#endif /* #if ARKHAM_URC */
   return heap;
 }
 
@@ -285,7 +325,11 @@ heap_free_free_list(heap_t *heap) {
 
 static void
 heap_free(heap_t *heap) {
+#if ARKHAM_URC
+  munmap(heap, NURSERY_SIZE);
+#else
   free(heap);
+#endif
 }
 
 #if ALLOC_DEBUG
@@ -301,7 +345,7 @@ heap_register_debug(heap_t *heap, base_t *base) {
 }
 #endif
 
-static cell_t *
+static URC_INLINE cell_t *
 heap_alloc_cell(heap_t *heap) {
   cell_t *cell;
 #if CELL_FREE_LIST
@@ -315,7 +359,13 @@ heap_alloc_cell(heap_t *heap) {
 #endif
   } else {
 #endif
+#if ARKHAM_URC
+    ASSERT0(heap->nursery_current + sizeof(cell_t) <= heap->nursery_end);
+    cell = (cell_t *)heap->nursery_current;
+    heap->nursery_current += sizeof(cell_t);
+#else /* #if !ARKHAM_URC */
     cell = (cell_t *)calloc(1, sizeof(cell_t));
+#endif /* #if ARKHAM_URC */
 #if ARKHAM_STATS
     ++heap->cell_alloc;
     int active_cell = heap->cell_alloc - heap->cell_free;
@@ -330,15 +380,13 @@ heap_alloc_cell(heap_t *heap) {
 #if INLINE_REFS
   base->refs = 0;
 #endif
-  base->left = CELL_REF_NULL;
-  cell->right = CELL_REF_NULL;
 #if ALLOC_DEBUG
   heap_register_debug(heap, &(cell->base));
 #endif
   return cell;
 }
 
-static batom_t *
+static URC_INLINE batom_t *
 heap_alloc_batom(heap_t *heap) {
 #if ARKHAM_STATS
   ++heap->batom_alloc;
@@ -347,11 +395,15 @@ heap_alloc_batom(heap_t *heap) {
     heap->batom_max = active_batom;
   }
 #endif
-  batom_t *batom = (batom_t *)calloc(1, sizeof(batom_t));
+  batom_t *batom;
+#if ARKHAM_URC
+  ASSERT0(heap->nursery_current + sizeof(batom_t) <= heap->nursery_end);
+  batom = (batom_t *)heap->nursery_current;
+  heap->nursery_current += sizeof(batom_t);
+#else /* #if !ARKHAM_URC */
+  batom = (batom_t *)calloc(1, sizeof(batom_t));
+#endif /* #if ARKHAM_URC */
   base_t *base = &(batom->base);
-#if INLINE_REFS
-  base->refs = 0;
-#endif
  // A cell can't point to itself. This distinguishes a batom from a cell.
   base->left = (cell_ref_t)base;
 #if ALLOC_DEBUG
@@ -360,7 +412,7 @@ heap_alloc_batom(heap_t *heap) {
   return batom;
 }
 
-static void
+static URC_INLINE void
 heap_free_cell(heap_t *heap, cell_t *cell) {
   ASSERT0(cell->base.refs != ALLOC_FREE_MARKER);
   cell->base.refs = ALLOC_FREE_MARKER;
@@ -373,9 +425,9 @@ heap_free_cell(heap_t *heap, cell_t *cell) {
 #endif
   } else {
 #endif
-#if !ALLOC_DEBUG
+#if !ARKHAM_URC && !ALLOC_DEBUG
     free(cell);
-#endif
+#endif /* #if !ARKHAM_URC && !ALLOC_DEBUG */
 #if ARKHAM_STATS
     ASSERT0(heap->cell_free < heap->cell_alloc);
     ++heap->cell_free;
@@ -393,9 +445,9 @@ heap_free_batom(heap_t *heap, batom_t *batom) {
 #endif
   ASSERT0(batom->base.refs != ALLOC_FREE_MARKER);
   batom->base.refs = ALLOC_FREE_MARKER;
-#if !ALLOC_DEBUG
-  free(batom);
-#endif
+#if !ARKHAM_URC && !ALLOC_DEBUG
+    free(batom);
+#endif /* #if !ARKHAM_URC && !ALLOC_DEBUG */
 }
 
 bool
@@ -449,6 +501,7 @@ noun_share(tagged_noun_t noun, heap_t *heap, base_t *owner) {
 tagged_noun_t
 noun_share(tagged_noun_t noun, heap_t *heap) {
 #endif
+  ASSERT0(!ARKHAM_URC);
   ASSERT0(!noun_is_freed(noun, heap));
   enum noun_type type = noun_get_type(noun);
   switch (type) {
@@ -504,6 +557,7 @@ noun_unshare(tagged_noun_t noun, heap_t *heap, bool toplevel, base_t *owner) {
 void
 noun_unshare(tagged_noun_t noun, heap_t *heap, bool toplevel) {
 #endif
+  ASSERT0(!ARKHAM_URC);
   ASSERT0(!noun_is_freed(noun, heap));
   enum noun_type type = noun_get_type(noun);
   switch (type) {
@@ -572,6 +626,7 @@ tagged_noun_t
 cell_set_left(tagged_noun_t noun, tagged_noun_t left, heap_t *heap) {
   ASSERT0(noun_get_type(noun) == cell_type);
   cell_t *cell = noun_as_cell(noun);
+  // XXX: if !logged then log
   SHARE(left, &(cell->base));
   UNSHARE(noun_get_left(noun), &(cell->base));
 #if FAT_NOUNS
@@ -592,6 +647,7 @@ tagged_noun_t
 cell_set_right(tagged_noun_t noun, tagged_noun_t right, heap_t *heap) {
   ASSERT0(noun_get_type(noun) == cell_type);
   cell_t *cell = noun_as_cell(noun);
+  // XXX: if !logged then log
   SHARE(right, &(cell->base));
   UNSHARE(noun_get_right(noun), &(cell->base));
 #if FAT_NOUNS
@@ -608,7 +664,7 @@ cell_set_right(tagged_noun_t noun, tagged_noun_t right, heap_t *heap) {
 #endif
 }
 
-tagged_noun_t
+tagged_noun_t URC_INLINE
 cell_new(heap_t *heap, tagged_noun_t left, tagged_noun_t right) {
   cell_t *cell = heap_alloc_cell(heap);
 #if FAT_NOUNS
@@ -618,7 +674,6 @@ cell_new(heap_t *heap, tagged_noun_t left, tagged_noun_t right) {
   cell->base.left = left;
   cell->right = right;
 #endif
-  cell->base.refs = 0;
   SHARE(left, &(cell->base));
   SHARE(right, &(cell->base));
 #if FAT_NOUNS
@@ -634,10 +689,10 @@ cell_new(heap_t *heap, tagged_noun_t left, tagged_noun_t right) {
 #endif
 }
 
-tagged_noun_t
+tagged_noun_t URC_INLINE
 batom_new(heap_t *heap, mpz_t val, bool clear) {
   batom_t *batom = heap_alloc_batom(heap);
-  mpz_init(batom->val);
+  mpz_init(batom->val); // TODO: use custom allocator
   mpz_set(batom->val, val);
   if (clear)
     mpz_clear(val);
@@ -963,13 +1018,17 @@ stack_free(fstack_t *stack) {
 }
 
 static fstack_t *
+stack_resize(fstack_t *stack) {
+  stack->capacity = stack->capacity * 2;
+  return (fstack_t *)realloc(stack, sizeof(fstack_t) + stack->capacity * sizeof(frame_t));
+}
+
+static inline fstack_t *
 stack_push(fstack_t *stack, frame_t frame, bool share, heap_t *heap) {
   if (share)
     SHARE(frame.data, STACK_OWNER);
-  if (stack->size >= stack->capacity) {
-    stack->capacity = stack->capacity * 2;
-    stack = (fstack_t *)realloc(stack, sizeof(fstack_t) + stack->capacity * sizeof(frame_t));
-  }
+  if (stack->size >= stack->capacity)
+    stack = stack_resize(stack);
   stack->frames[stack->size++] = frame;
 #if ARKHAM_STATS
   if (stack->size > stack->max_size)
@@ -978,23 +1037,23 @@ stack_push(fstack_t *stack, frame_t frame, bool share, heap_t *heap) {
   return stack;
 }
 
-static bool
+static inline bool
 stack_is_empty(fstack_t *stack) {
   return stack->size == 0;
 }
 
-static size_t
+static inline size_t
 stack_size(fstack_t *stack) {
   return stack->size;
 }
 
-static frame_t *
+static inline frame_t *
 stack_current_frame(fstack_t *stack) {
   ASSERT0(!stack_is_empty(stack));
   return &(stack->frames[stack->size - 1]);
 }
 
-static fstack_t *
+static inline fstack_t *
 stack_pop(fstack_t *stack, bool unshare, heap_t *heap) {
   ASSERT0(!stack_is_empty(stack));
   if (unshare)
@@ -1129,10 +1188,10 @@ static void trace(machine_t *machine, enum op_t op, tagged_noun_t noun) {
   noun_print(file, noun, true);
 }
 
-#define TRACE() if (trace_flag) trace(machine, op, root)
-#define CITE(line) if (trace_flag) cite(file, line, "\n")
-#define CITE_INLINE(line) if (trace_flag) cite(file, line, "")
-#define CITE_END(p) if (trace_flag && (p)) fprintf(file, "\n")
+#define TRACE() if (ARKHAM_TRACE && trace_flag) trace(machine, op, root)
+#define CITE(line) if (ARKHAM_TRACE && trace_flag) cite(file, line, "\n")
+#define CITE_INLINE(line) if (ARKHAM_TRACE && trace_flag) cite(file, line, "")
+#define CITE_END(p) if (ARKHAM_TRACE && trace_flag && (p)) fprintf(file, "\n")
 #define PR(noun) do { fprintf(file, "%s: ", #noun); noun_print(file, noun, true); fprintf(file, "\n"); } while (false)
 #define ASSIGN(l, r, o) do { tagged_noun_t old = l; l = SHARE(r, o) ; UNSHARE(old, o); } while (false)
 #define L(noun) noun_get_left(noun)
@@ -1162,7 +1221,7 @@ static void dump(machine_t *machine, frame_t *frame, tagged_noun_t root, const c
   ASSERT(false, "%s\n", function);
 }
 
-#define TF() if (machine->trace_flag && TRACE_FUNCTIONS) fprintf(machine->file, "function = %s\n", __FUNCTION__)
+#define TF() if (ARKHAM_TRACE && machine->trace_flag) fprintf(machine->file, "function = %s\n", __FUNCTION__)
 
 static fn_ret_t f13(machine_t *machine, frame_t *frame, tagged_noun_t root) {
   TF();
@@ -1295,29 +1354,41 @@ static fn_ret_t cond1(machine_t *machine, tagged_noun_t root) {
   return (fn_ret_t){ .root = next_root, .op = nock_op };
 }
 
+static inline void inc_ops(machine_t *machine) { 
+#if ARKHAM_STATS
+  ++machine->ops;
+#endif
+}
+
 static tagged_noun_t arkham_run_impl(machine_t *machine, enum op_t op, tagged_noun_t root) {
   heap_t *heap = machine->heap;
   FILE *file = machine->file;
   bool trace_flag = machine->trace_flag;
 
-#define CALL0(o, noun, cf) machine->stack = stack_push(machine->stack, FRAME(cf, _UNDEFINED), /* share */ false, heap); ASSIGN(root, noun, ROOT_OWNER); op = o; goto call
-#define CALL1(o, noun, cf, cd) machine->stack = stack_push(machine->stack, FRAME(cf, cd), /* share */ true, heap); ASSIGN(root, noun, ROOT_OWNER); op = o; goto call
-#define TAIL_CALL(o, noun) ASSIGN(root, noun, ROOT_OWNER); op = o; goto call
+#if ARKHAM_THREADED_INTERPRETER
+  void *op_labels[] = { &&slash_op, &&cell_op, &&inc_op, &&equals_op, &&nock_op, &&ret_op, &&crash_op, &&cond_op };
+#define NEXT_OP(o) TRACE(); inc_ops(machine); goto *op_labels[o]
+#define LABEL(l) l
+#else /* #if !ARKHAM_THREADED_INTERPRETER */
+#define NEXT_OP(o) TRACE(); inc_ops(machine); op = o; continue
+#define LABEL(l) case l
+#endif /* #if ARKHAM_THREADED_INTERPRETER */
+
+#define CALL0(o, noun, cf) machine->stack = stack_push(machine->stack, FRAME(cf, _UNDEFINED), /* share */ false, heap); ASSIGN(root, noun, ROOT_OWNER); NEXT_OP(o)
+#define CALL1(o, noun, cf, cd) machine->stack = stack_push(machine->stack, FRAME(cf, cd), /* share */ true, heap); ASSIGN(root, noun, ROOT_OWNER); NEXT_OP(o)
+#define TAIL_CALL(o, noun) ASSIGN(root, noun, ROOT_OWNER); op = o; NEXT_OP(o)
 #define RET(noun) ASSIGN(root, noun, ROOT_OWNER); goto ret
 
   SHARE(root, ROOT_OWNER);
 
   /* interpreter */
+#if ARKHAM_THREADED_INTERPRETER
+  NEXT_OP(op);
+#else
   while (true) {
-  call:
-    TRACE();
-
-#if ARKHAM_STATS
-    ++machine->ops;
-#endif
-
     switch (op) {
-    case nock_op: {
+#endif
+    LABEL(nock_op): {
       if (T(root) == cell_type) {
 	tagged_noun_t r = R(root);
 	if (T(r) == cell_type) {
@@ -1344,7 +1415,7 @@ static tagged_noun_t arkham_run_impl(machine_t *machine, enum op_t op, tagged_no
 	      case 3: { CITE(21); tagged_noun_t nxt = CELL(L(root), R(r)); CALL0(nock_op, nxt, f21); }
 	      case 4: { CITE(22); tagged_noun_t nxt = CELL(L(root), R(r)); CALL0(nock_op, nxt, f22); }
 	      case 5: { CITE(23); tagged_noun_t nxt = CELL(L(root), R(r)); CALL0(nock_op, nxt, f23); }
-	      case 6: { CITE(25); fn_ret_t fn_ret = cond1(machine, root); op = fn_ret.op; UNSHARE(root, ROOT_OWNER); root = fn_ret.root; continue; }
+	      case 6: { CITE(25); fn_ret_t fn_ret = cond1(machine, root); op = fn_ret.op; UNSHARE(root, ROOT_OWNER); root = fn_ret.root; NEXT_OP(op); }
 	      case 7: { tagged_noun_t rr = R(r);
 		if (T(rr) == cell_type) { 
 		  CITE(26); 
@@ -1406,7 +1477,7 @@ static tagged_noun_t arkham_run_impl(machine_t *machine, enum op_t op, tagged_no
       }
     }
 
-    case slash_op: {
+    LABEL(slash_op): {
       if (T(root) == cell_type) {
 	tagged_noun_t l = L(root);
 	if (T(l) == cell_type) CRASH(machine);
@@ -1452,7 +1523,7 @@ static tagged_noun_t arkham_run_impl(machine_t *machine, enum op_t op, tagged_no
       }
     }
 
-    case cell_op: {
+    LABEL(cell_op): {
       if (T(root) == cell_type) {
 	CITE(4); RET(_0);
       } else {
@@ -1460,7 +1531,7 @@ static tagged_noun_t arkham_run_impl(machine_t *machine, enum op_t op, tagged_no
       }
     }
 
-    case inc_op: {
+    LABEL(inc_op): {
       if (T(root) != cell_type) {
 	CITE(6); RET(atom_increment(root));
       } else {
@@ -1468,7 +1539,7 @@ static tagged_noun_t arkham_run_impl(machine_t *machine, enum op_t op, tagged_no
       }
     }
 
-    case equals_op: {
+    LABEL(equals_op): {
       if (T(root) == cell_type) {
 	tagged_noun_t l = L(root);
 	if (T(l) != cell_type) {
@@ -1486,10 +1557,12 @@ static tagged_noun_t arkham_run_impl(machine_t *machine, enum op_t op, tagged_no
       }
     }
 
-    case ret_op: { ASSERT0(op != ret_op); }
-    case crash_op: { ASSERT0(op != crash_op); }
-    case cond_op: { ASSERT0(op != cond_op); }
-    }
+    LABEL(ret_op): { ASSERT0(op != ret_op); }
+    LABEL(crash_op): { ASSERT0(op != crash_op); }
+    LABEL(cond_op): { ASSERT0(op != cond_op); }
+#if !ARKHAM_THREADED_INTERPRETER
+    } /* switch (op) */
+#endif
 
   ret:
     if (stack_is_empty(machine->stack)) {
@@ -1502,8 +1575,14 @@ static tagged_noun_t arkham_run_impl(machine_t *machine, enum op_t op, tagged_no
       root = fn_ret.root;
       if (op == ret_op)
 	goto ret;
+#if ARKHAM_THREADED_INTERPRETER
+      else
+	NEXT_OP(op);
+#endif
     }
+#if !ARKHAM_THREADED_INTERPRETER
   }
+#endif /* while (true) */
 }
 
 static void alloc_atoms(heap_t *heap) {
@@ -1563,20 +1642,20 @@ static void arkham_run(int n_inputs, infile_t *inputs, bool trace_flag, bool int
 
     machine_set(&machine);
 
-    if (true) { // ZZZ
+    if (false) { // ZZZ
       char *env = getenv("ARKHAM_ARG");
       int arg = (env != NULL ? atoi(env) : 10);
       test_jit(satom_as_noun(arg));
     } else {
-    bool eof = false;
-    do {
-      // TODO: use readline (or editline)
-      if (interactive_flag) printf("> ");
-      tagged_noun_t top = parse(&machine, input, &eof);
-      if (NOUN_IS_DEFINED(top)) {
-	noun_print(stdout, arkham_run_impl(&machine, nock_op, top), true); printf("\n");
-      }
-    } while (interactive_flag && !eof);
+      bool eof = false;
+      do {
+	// TODO: use readline (or editline)
+	if (interactive_flag) printf("> ");
+	tagged_noun_t top = parse(&machine, input, &eof);
+	if (NOUN_IS_DEFINED(top)) {
+	  noun_print(stdout, arkham_run_impl(&machine, nock_op, top), true); printf("\n");
+	}
+      } while (interactive_flag && !eof);
     }
 
     free_atoms(machine.heap);
@@ -1615,7 +1694,7 @@ main(int argc, const char *argv[]) {
 
   const char *trace_env = getenv("ARKHAM_TRACE");
   if (trace_env == NULL) trace_env = "false";
-  bool trace = !(strcasecmp(trace_env, "no") == 0 || strcmp(trace_env, "0") == 0 || strcasecmp(trace_env, "false") == 0);
+  bool trace_flag = !(strcasecmp(trace_env, "no") == 0 || strcmp(trace_env, "0") == 0 || strcasecmp(trace_env, "false") == 0);
   bool interactive = false;
   infile_t *inputs = (infile_t *)calloc(1, argc * sizeof(infile_t));
   int n_inputs = 0;
@@ -1625,8 +1704,8 @@ main(int argc, const char *argv[]) {
     STRCMP_CASE("--help", arkham_usage(NULL));
     STRCMP_CASE("--interactive", interactive = true);
     STRCMP_CASE("-i", interactive = true);
-    STRCMP_CASE("--enable-tracing", trace = true);
-    STRCMP_CASE("--disable-tracing", trace = false);
+    STRCMP_CASE("--enable-tracing", trace_flag = true);
+    STRCMP_CASE("--disable-tracing", trace_flag = false);
     STRCMP_CASE("-", { inputs[n_inputs].name = NULL; inputs[n_inputs].file = stdin; ++n_inputs; });
     TRUE_CASE(file, {
 	if (strncmp(file, "-", 1) == 0)
@@ -1641,5 +1720,6 @@ main(int argc, const char *argv[]) {
     inputs[n_inputs].name = NULL; inputs[n_inputs].file = stdin; ++n_inputs;
     interactive = true;
   }
-  arkham_run(n_inputs, inputs, trace, interactive, argv[0]);
+  FAIL(ARKHAM_TRACE || !trace_flag, "Call tracing disabled for this build");
+  arkham_run(n_inputs, inputs, trace_flag, interactive, argv[0]);
 }

@@ -36,11 +36,11 @@
 #include "llvm/Transforms/Scalar.h"
 // REVISIT: cache result of "getGlobalContext()"?
 #if UINTPTR_MAX == UINT64_MAX
-#define llvm_tagged_noun_type() Type::getInt64Ty(getGlobalContext())
-#define LLVM_NOUN(noun) ConstantInt::get(getGlobalContext(), APInt(64, noun))
+#define llvm_noun_type() Type::getInt64Ty(getGlobalContext())
+#define LLVM_NOUN(noun) ConstantInt::get(getGlobalContext(), APInt(64, (noun).value))
 #else
-#define llvm_tagged_noun_type() Type::getInt32Ty(getGlobalContext())
-#define LLVM_NOUN(noun) ConstantInt::get(getGlobalContext(), APInt(32, noun))
+#define llvm_noun_type() Type::getInt32Ty(getGlobalContext())
+#define LLVM_NOUN(noun) ConstantInt::get(getGlobalContext(), APInt(32, (noun).value))
 #endif
 
 using namespace llvm;
@@ -120,11 +120,11 @@ llvm_t *llvm_new(const char *module_name) {
   llvm->engine->RegisterJITEventListener(new TestJITEventListener());
 
   std::vector<Type*> parameter_types;
-  parameter_types.push_back(llvm_tagged_noun_type());
-  FunctionType *function1_type = FunctionType::get(llvm_tagged_noun_type(), parameter_types, /* is_vararg */ false);
+  parameter_types.push_back(llvm_noun_type());
+  FunctionType *function1_type = FunctionType::get(llvm_noun_type(), parameter_types, /* is_vararg */ false);
   llvm->uadd_with_overflow = Intrinsic::getDeclaration(llvm->module, Intrinsic::uadd_with_overflow, parameter_types);
-  parameter_types.push_back(llvm_tagged_noun_type());
-  FunctionType *function2_type = FunctionType::get(llvm_tagged_noun_type(), parameter_types, /* is_vararg */ false);
+  parameter_types.push_back(llvm_noun_type());
+  FunctionType *function2_type = FunctionType::get(llvm_noun_type(), parameter_types, /* is_vararg */ false);
 
   Function* atom_increment_fn = Function::Create(function1_type, Function::ExternalLinkage, "atom_increment", llvm->module);
   llvm->engine->addGlobalMapping(atom_increment_fn, (void *)atom_increment);
@@ -174,27 +174,27 @@ void machine_set(machine_t *m) {
 }
 
 //ZZZ
-extern tagged_noun_t
-fib(tagged_noun_t n) {
+extern noun_t
+fib(noun_t n) {
   ASSERT(noun_is_valid_atom(n, machine->heap), "noun_is_valid_atom(n, machine->heap)\n");
 
-  tagged_noun_t f0 = _0;
-  tagged_noun_t f1 = _1;
-  tagged_noun_t counter = _0;
+  noun_t f0 = _0;
+  noun_t f1 = _1;
+  noun_t counter = _0;
   while (true) {
     if (NOUN_EQUALS(atom_equals(n, counter), _YES))
       return f0;
     else {
       counter = atom_increment(counter);
-      tagged_noun_t sum = atom_add(f0, f1);
+      noun_t sum = atom_add(f0, f1);
       f0 = f1;
       f1 = sum;
     }
   }
 }
 
-static inline tagged_noun_t
-noun_nop(tagged_noun_t noun) {
+static inline noun_t
+noun_nop(noun_t noun) {
   return noun;
 }
 
@@ -209,7 +209,7 @@ noun_nop(tagged_noun_t noun) {
 #define UNSHARE(noun, o) noun_unshare(noun, machine->heap, true)
 #endif /* #if ARKHAM_URC */
 
-#define ASSIGN(l, r, o) do { tagged_noun_t old = l; l = SHARE(r, o) ; UNSHARE(old, o); } while (false)
+#define ASSIGN(l, r, o) do { noun_t old = l; l = SHARE(r, o) ; UNSHARE(old, o); } while (false)
 
 // Addresses a node in a tree: an argument to the slash operator.
 typedef uint32_t jit_address_t;
@@ -226,21 +226,21 @@ typedef uint32_t jit_index_t;
 // Shouldn't be too big (uint16 is overkill).
 #define JIT_STACK_MAX UINT16_MAX
 
-typedef tagged_noun_t (*compiled_fn_t)(tagged_noun_t noun);//ZZZ
+typedef noun_t (*compiled_fn_t)(noun_t noun);//ZZZ
 
 namespace jit {
   namespace ast {
     class LocalVariable {
     public:
       char *name;
-      base_t *owner;
-      tagged_noun_t value;
+      noun_header_t *owner;
+      noun_t value;
 #if ARKHAM_LLVM
       Value *llvm_value;
-      tagged_noun_t initial_value;
+      noun_t initial_value;
 #endif
 
-      LocalVariable(char *name, tagged_noun_t initial_value, base_t *owner) {
+      LocalVariable(char *name, noun_t initial_value, noun_header_t *owner) {
 	this->name = name;
 	this->owner = owner;
 	this->value = _UNDEFINED;
@@ -268,7 +268,7 @@ namespace jit {
       }
 #endif
 
-      void set_value(tagged_noun_t value) {
+      void set_value(noun_t value) {
 	if (NOUN_IS_DEFINED(this->value))
 	  UNSHARE(this->value, this->owner);
 	if (NOUN_IS_DEFINED(value))
@@ -309,10 +309,10 @@ namespace jit {
       std::vector<LocalVariable> locals;
       std::vector<LocalVariable> next_locals;
       std::vector<LocalVariable> stack;
-      tagged_noun_t args_root;
-      tagged_noun_t local_variable_index_map;
-      tagged_noun_t args_placeholder;
-      tagged_noun_t loop_body_placeholder;
+      noun_t args_root;
+      noun_t local_variable_index_map;
+      noun_t args_placeholder;
+      noun_t loop_body_placeholder;
 #if ARKHAM_LLVM
       void *fp;
 #endif
@@ -387,11 +387,11 @@ namespace jit {
 #if ARKHAM_LLVM
       Value *compile_alloca(const char *var_name) {
 	IRBuilder<> builder(&function->getEntryBlock(), function->getEntryBlock().begin());
-	return builder.CreateAlloca(llvm_tagged_noun_type(), 0, var_name);
+	return builder.CreateAlloca(llvm_noun_type(), 0, var_name);
       }
 #endif /* ARKHAM_LLVM */
 
-      jit_index_t allocate_local(tagged_noun_t initial_value) {
+      jit_index_t allocate_local(noun_t initial_value) {
 	if (failed) return 0;
 
 	ENV_CHECK(this, next_local_variable_index < JIT_INDEX_MAX, "Too many local variable declarations", 0);
@@ -414,9 +414,9 @@ namespace jit {
       void allocate_address(jit_address_t address) {
 	ENV_CHECK_VOID(this, address >= 1, "Invalid address");
 
-	tagged_noun_t noun = local_variable_index_map;
+	noun_t noun = local_variable_index_map;
 	int depth = (sizeof(address) * 8 - __builtin_clz(address) - 1);
-	tagged_noun_t ancestors[depth];
+	noun_t ancestors[depth];
 	bool choice[depth];
 
 	// Run through the bits from left to right:
@@ -456,7 +456,7 @@ namespace jit {
 	    SHARE(args_root, ENV_OWNER);
 	  }
 
-	  tagged_noun_t n = noun;
+	  noun_t n = noun;
 	  int i;
 	  for (i = depth - 1; i >= 0; --i) {
 	    if (choice[i])
@@ -479,7 +479,7 @@ namespace jit {
       jit_index_t get_index_of_address(jit_address_t address) {
 	ENV_CHECK(this, address >= 1, "Invalid address", 0);
 
-	tagged_noun_t noun = local_variable_index_map;
+	noun_t noun = local_variable_index_map;
 	ENV_CHECK(this, !NOUN_EQUALS(noun, loop_body_placeholder), "Cannot refer to the loop body", 0);
 	ENV_CHECK(this, !NOUN_EQUALS(noun, args_placeholder), "Undefined value", 0);
 	int depth = (sizeof(address) * 8 - __builtin_clz(address) - 1);
@@ -501,18 +501,18 @@ namespace jit {
       }
 
       /* Callers must unshare the value. */
-      tagged_noun_t get_stack(jit_index_t index) {
+      noun_t get_stack(jit_index_t index) {
 	if (failed) return _UNDEFINED;
 
 	ENV_CHECK(this, index <= max_stack_index, "Invalid index", _UNDEFINED);
 
-	tagged_noun_t value = stack.at(index).value;
+	noun_t value = stack.at(index).value;
 	ENV_CHECK(this, NOUN_IS_DEFINED(value), "Undefined value", _UNDEFINED);
 
 	return value;
       }
 
-      void set_stack(jit_index_t index, tagged_noun_t value) {
+      void set_stack(jit_index_t index, noun_t value) {
 	if (failed) return;
 
 	ENV_CHECK_VOID(this, index <= max_stack_index, "Invalid index");
@@ -520,18 +520,18 @@ namespace jit {
 	stack.at(index).set_value(value);
       }
 
-      tagged_noun_t get_local(jit_index_t index) {
+      noun_t get_local(jit_index_t index) {
 	if (failed) return _UNDEFINED;
 
 	ENV_CHECK(this, index < locals.size(), "Invalid index", _UNDEFINED);
 
-	tagged_noun_t value = locals.at(index).value;
+	noun_t value = locals.at(index).value;
 	ENV_CHECK(this, NOUN_IS_DEFINED(value), "Undefined value", _UNDEFINED);
 
 	return value;
       }
 
-      void set_local(jit_index_t index, tagged_noun_t value) {
+      void set_local(jit_index_t index, noun_t value) {
 	if (failed) return;
 
 	ENV_CHECK_VOID(this, index < next_locals.size(), "Invalid index");
@@ -541,7 +541,7 @@ namespace jit {
 	next_locals.at(index).set_value(value);
       }
 
-      void initialize_local(jit_index_t index, tagged_noun_t value) {
+      void initialize_local(jit_index_t index, noun_t value) {
 	if (failed) return;
 
 	ENV_CHECK_VOID(this, index < locals.size(), "Invalid index");
@@ -555,7 +555,7 @@ namespace jit {
 	ASSIGN(local_variable_index_map, cell_new(machine->heap, loop_body_placeholder, local_variable_index_map), ENV_OWNER);
       }
 
-      void initialize_args(tagged_noun_t args, tagged_noun_t args_root) {
+      void initialize_args(noun_t args, noun_t args_root) {
 	if (noun_get_type(args) == cell_type) {
 	  ENV_CHECK_VOID(this, noun_get_type(args_root) == cell_type, "Argument type mismatch");
 	  initialize_args(noun_get_left(args), noun_get_left(args_root));
@@ -568,20 +568,20 @@ namespace jit {
 	}
       }
 
-      tagged_noun_t eval(Node *oper, tagged_noun_t args) {
+      noun_t eval(Node *oper, noun_t args) {
 	ENV_CHECK(this, NOUN_IS_UNDEFINED(args) == NOUN_IS_UNDEFINED(args_root), "Arguments mismatch", _UNDEFINED);
 
 	initialize_args(args, args_root);
 
 #if ARKHAM_LLVM
 	compiled_fn_t fn = (compiled_fn_t)fp; //ZZZ
-	tagged_noun_t compiled_result = (fn)(args); // ZZZ: unshare?
+	noun_t compiled_result = (fn)(args); // ZZZ: unshare?
 	printf(">>> "); noun_print(stdout, compiled_result, true); printf("\n");
 #endif
     
 	oper->eval(this);
     
-	tagged_noun_t result = failed ? _UNDEFINED : get_stack(0);
+	noun_t result = failed ? _UNDEFINED : get_stack(0);
 	SHARE(result, ENV_OWNER);
 	set_stack(0, _UNDEFINED);
 	return result;
@@ -592,7 +592,7 @@ namespace jit {
 	Function::arg_iterator iter;  
       } iter_t;
   
-      void compile_copy_args_to_locals(tagged_noun_t args, iter_t *iter) {
+      void compile_copy_args_to_locals(noun_t args, iter_t *iter) {
 	if (noun_get_type(args) == cell_type) {
 	  compile_copy_args_to_locals(noun_get_left(args), iter);
 	  compile_copy_args_to_locals(noun_get_right(args), iter);
@@ -647,10 +647,10 @@ namespace jit {
 	// REVISIT: calling convention fastcc? (Function::setCallingConv())
     
 	// Create argument list.
-	std::vector<Type*> params(1 /*ZZZ*/, llvm_tagged_noun_type());
+	std::vector<Type*> params(1 /*ZZZ*/, llvm_noun_type());
     
 	// Create function type.
-	FunctionType *functionType = FunctionType::get(llvm_tagged_noun_type(), params, false);
+	FunctionType *functionType = FunctionType::get(llvm_noun_type(), params, false);
     
 	// Create function.
 	function = Function::Create(functionType, Function::PrivateLinkage, /* anonymous */ std::string(""), llvm->module);
@@ -757,7 +757,7 @@ namespace jit {
 	snprintf(buffer, sizeof(buffer), "%s.merge", prefix);
 	blocks.merge_block = BasicBlock::Create(getGlobalContext(), buffer);
 
-	blocks.add_incoming_to_else(UndefValue::get(llvm_tagged_noun_type()), env->builder->GetInsertBlock());
+	blocks.add_incoming_to_else(UndefValue::get(llvm_noun_type()), env->builder->GetInsertBlock());
 	env->builder->CreateCondBr(test, blocks.if_block, blocks.else_block);
 
 	// Emit 'then' value.
@@ -774,7 +774,7 @@ namespace jit {
 	// Emit 'else' block.
 	env->function->getBasicBlockList().push_back(blocks.else_block);
 	env->builder->SetInsertPoint(blocks.else_block);
-	blocks.begin_else(env, llvm_tagged_noun_type());
+	blocks.begin_else(env, llvm_noun_type());
 	add_default_branch = true;
 	Value *else_value = if_not_atoms_fn(env, left, right, &blocks, &add_default_branch);
 	// Codegen of 'else' can change the current block, update else_block for the PHI.
@@ -792,8 +792,8 @@ namespace jit {
 
       static Value *if_atoms(Environment *env, const char *prefix, Type *type, Value *left, Value *right, if_atoms_fn_t if_atoms_fn, if_atoms_fn_t if_not_atoms_fn) {
 	Value *both = env->builder->CreateOr(left, right);
-	Value *low_bit = env->builder->CreateAnd(both, LLVM_NOUN(1));
-	Value *test = env->builder->CreateICmpEQ(low_bit, LLVM_NOUN(0));
+	Value *low_bit = env->builder->CreateAnd(both, LLVM_NOUN(RAW_VALUE_AS_NOUN(NOUN_NOT_SATOM_FLAG)));
+	Value *test = env->builder->CreateICmpEQ(low_bit, LLVM_NOUN(RAW_VALUE_AS_NOUN(0)));
 
 	return if_else(env, prefix, type, left, right, test, if_atoms_fn, if_not_atoms_fn, /* parent_blocks */ NULL);
       }
@@ -803,11 +803,11 @@ namespace jit {
     class Declaration : public Node {
       /* protected */ public:
       Node *inner;
-      tagged_noun_t local_variable_initial_values;
-      tagged_noun_t local_variable_index_map;
+      noun_t local_variable_initial_values;
+      noun_t local_variable_index_map;
 
     private:
-      jit_address_t get_root_address(tagged_noun_t env_local_variable_index_map, jit_address_t address) {
+      jit_address_t get_root_address(noun_t env_local_variable_index_map, jit_address_t address) {
 	if (NOUN_EQUALS(local_variable_index_map, env_local_variable_index_map)) {
 	  return address;
 	} else if (noun_get_type(env_local_variable_index_map) == cell_type) {
@@ -820,7 +820,7 @@ namespace jit {
 	  return JIT_ADDRESS_UNDEFINED;
       }
 
-      void dump_impl(Environment *env, FILE *fp, int indent, tagged_noun_t local_variable_initial_values, jit_address_t address) {
+      void dump_impl(Environment *env, FILE *fp, int indent, noun_t local_variable_initial_values, jit_address_t address) {
 	if (noun_get_type(local_variable_initial_values) == cell_type) {
 	  dump_impl(env, fp, indent, noun_get_left(local_variable_initial_values), address * 2);
 	  dump_impl(env, fp, indent, noun_get_right(local_variable_initial_values), address * 2 + 1);
@@ -831,10 +831,10 @@ namespace jit {
 	}
       }
 
-      tagged_noun_t prep_impl(Environment *env, tagged_noun_t local_variable_initial_values) {
+      noun_t prep_impl(Environment *env, noun_t local_variable_initial_values) {
 	if (noun_get_type(local_variable_initial_values) == cell_type) {
-	  tagged_noun_t left = prep_impl(env, noun_get_left(local_variable_initial_values));
-	  tagged_noun_t right = prep_impl(env, noun_get_right(local_variable_initial_values));
+	  noun_t left = prep_impl(env, noun_get_left(local_variable_initial_values));
+	  noun_t right = prep_impl(env, noun_get_right(local_variable_initial_values));
 	  return cell_new(machine->heap, left, right);
 	} else {
 	  // Allocate a local variable slot for a declared variable:
@@ -842,7 +842,7 @@ namespace jit {
 	}
       }
 
-      void eval_impl(Environment *env, tagged_noun_t local_variable_initial_values, tagged_noun_t local_variable_index_map) {
+      void eval_impl(Environment *env, noun_t local_variable_initial_values, noun_t local_variable_index_map) {
 	if (noun_get_type(local_variable_initial_values) == cell_type) {
 	  eval_impl(env, noun_get_left(local_variable_initial_values), noun_get_left(local_variable_index_map));
 	  eval_impl(env, noun_get_right(local_variable_initial_values), noun_get_right(local_variable_index_map));
@@ -854,7 +854,7 @@ namespace jit {
       }
 
     public:
-      Declaration(tagged_noun_t local_variable_initial_values) {
+      Declaration(noun_t local_variable_initial_values) {
 	SHARE(local_variable_initial_values, AST_OWNER);
 	this->local_variable_initial_values = local_variable_initial_values;
 	this->local_variable_index_map = _UNDEFINED;
@@ -880,7 +880,7 @@ namespace jit {
 	local_variable_index_map = prep_impl(env, local_variable_initial_values);
 	SHARE(local_variable_index_map, AST_OWNER);
 
-	tagged_noun_t new_local_variable_index_map = cell_new(machine->heap, local_variable_index_map, env->local_variable_index_map);
+	noun_t new_local_variable_index_map = cell_new(machine->heap, local_variable_index_map, env->local_variable_index_map);
 	ASSIGN(env->local_variable_index_map, new_local_variable_index_map, ENV_OWNER);
 
 	inner->prep(env);
@@ -971,7 +971,7 @@ namespace jit {
       }
 
       static Value *if_overflow(Environment *env, Value *sum, Value *unused, IfThenElseBlocks *blocks, bool *add_default_branch) {
-	blocks->parent->add_incoming_to_else(UndefValue::get(llvm_tagged_noun_type()), blocks->if_block);
+	blocks->parent->add_incoming_to_else(UndefValue::get(llvm_noun_type()), blocks->if_block);
 	env->builder->CreateBr(blocks->parent->else_block);
 	*add_default_branch = false;
 	return sum;
@@ -985,7 +985,7 @@ namespace jit {
 	Value *result = env->builder->CreateCall2(machine->llvm->uadd_with_overflow, left, right);
 	Value *sum = env->builder->CreateExtractValue(result, 0);
 	Value *overflow = env->builder->CreateExtractValue(result, 1);
-	return if_else(env, "add.check.overflow", llvm_tagged_noun_type(), sum, NULL, overflow, if_overflow, if_not_overflow, /* parent_blocks */ blocks);
+	return if_else(env, "add.check.overflow", llvm_noun_type(), sum, NULL, overflow, if_overflow, if_not_overflow, /* parent_blocks */ blocks);
       }
 
       static Value *add_if_not_atoms(Environment *env, Value *left, Value *right, IfThenElseBlocks *blocks, bool *add_default_branch) {
@@ -1002,7 +1002,7 @@ namespace jit {
 	case binop_eq_type: 
 	  return if_atoms(env, "eq", Type::getInt1Ty(getGlobalContext()), left, right, eq_if_atoms, eq_if_not_atoms);
 	case binop_add_type:
-	  return if_atoms(env, "add", llvm_tagged_noun_type(), left, right, add_if_atoms, add_if_not_atoms);
+	  return if_atoms(env, "add", llvm_noun_type(), left, right, add_if_atoms, add_if_not_atoms);
 	}
     
 	return NULL;
@@ -1015,13 +1015,13 @@ namespace jit {
 	left->eval(env);
 	right->eval(env);
     
-	tagged_noun_t n1 = env->get_stack(stack_index);
-	tagged_noun_t n2 = env->get_stack(stack_index + 1);
+	noun_t n1 = env->get_stack(stack_index);
+	noun_t n2 = env->get_stack(stack_index + 1);
     
 	if (!env->failed) {
 	  switch (type) {
 	  case binop_eq_type:
-	    env->set_stack(stack_index, (atom_equals(n1, n2) ? _YES : _NO));
+	    env->set_stack(stack_index, atom_equals(n1, n2));
 	    env->set_stack(stack_index + 1, _UNDEFINED);
 	    break;
 	  case binop_add_type:
@@ -1090,7 +1090,7 @@ namespace jit {
 	Value *subexpr_value = subexpr->compile(env);
 	Value *test = env->builder->CreateICmpULT(subexpr_value, LLVM_NOUN(satom_as_noun(SATOM_MAX)));
     
-	return if_else(env, "inc", llvm_tagged_noun_type(), subexpr_value, NULL, test, inc_if_atoms, inc_if_not_atoms, /* parent_blocks */ NULL);
+	return if_else(env, "inc", llvm_noun_type(), subexpr_value, NULL, test, inc_if_atoms, inc_if_not_atoms, /* parent_blocks */ NULL);
       }
 #endif /* ARKHAM_LLVM */
 
@@ -1266,7 +1266,7 @@ namespace jit {
 	  test->eval(env);
 
 	  if (env->failed) return;
-	  bool is_eq = atom_equals(env->get_stack(stack_index), _YES);
+	  bool is_eq = NOUN_EQUALS(env->get_stack(stack_index), _YES);
 	  env->set_stack(stack_index, _UNDEFINED);
 
 	  if (is_eq) {
@@ -1305,7 +1305,7 @@ namespace jit {
 
 	// Test block.
 	env->builder->SetInsertPoint(test_block);
-	Type *loop_type = llvm_tagged_noun_type();
+	Type *loop_type = llvm_noun_type();
 	PHINode *test_phi = env->builder->CreatePHI(loop_type, 2);
 	test_phi->addIncoming(LLVM_NOUN(_0), incoming_block);
 	Value *test_value = test->compile(env);
@@ -1449,7 +1449,7 @@ Node *fib_ast(Environment *env) {
   return decl_f0_f1;
 }
 
-void test_jit(tagged_noun_t args) { //ZZZ
+void test_jit(noun_t args) { //ZZZ
   // For testing, generate the AST that the pattern matcher *would*
   // generate when parsing "fib" in Nock:
 
@@ -1465,7 +1465,7 @@ void test_jit(tagged_noun_t args) { //ZZZ
   env->compile(root);
 #endif
 
-  tagged_noun_t result = env->eval(root, args);
+  noun_t result = env->eval(root, args);
 
   // ZZZ
   if (env->failed) 

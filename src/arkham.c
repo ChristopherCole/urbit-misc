@@ -13,11 +13,12 @@
 #include <sys/errno.h>
 #include <sys/mman.h>
 #include <gmp.h>
+#include <jemalloc/jemalloc.h>
 
 #include "arkham.h"
 
-static inline tagged_noun_t
-noun_nop(tagged_noun_t noun) {
+static inline noun_t
+noun_nop(noun_t noun) {
   return noun;
 }
 
@@ -118,26 +119,26 @@ typedef struct {
   FILE *file;
 } infile_t;
 
-static void noun_print_decl(FILE *file, tagged_noun_t noun);
+static void noun_print_decl(FILE *file, noun_t noun);
 
 static inline satom_t
-base_get_refs(base_t *base) {
+noun_header_get_refs(noun_header_t *noun_header) {
 #if INLINE_REFS
-  return base->refs;
+  return noun_header->refs;
 #endif
 }
 
 static inline void
-base_inc_refs(base_t *base) {
+noun_header_inc_refs(noun_header_t *noun_header) {
 #if INLINE_REFS
-  base->refs += 1;
+  noun_header->refs += 1;
 #endif
 }
 
 static inline void
-base_dec_refs(base_t *base) {
+noun_header_dec_refs(noun_header_t *noun_header) {
 #if INLINE_REFS
-  base->refs -= 1;
+  noun_header->refs -= 1;
 #endif
 }
 
@@ -145,21 +146,21 @@ base_dec_refs(base_t *base) {
 #define OWNERS_SIZE 16
 
 static void
-base_print_header(FILE *file, const char *prefix, base_t *base, const char *suffix) {
-  if (base_get_refs(base) == ALLOC_FREE_MARKER)
-    fprintf(file, "%s{%lu,###}%s", prefix, base->id, suffix);
+noun_header_print_header(FILE *file, const char *prefix, noun_header_t *noun_header, const char *suffix) {
+  if (noun_header_get_refs(noun_header) == ALLOC_FREE_MARKER)
+    fprintf(file, "%s{%lu,###}%s", prefix, noun_header->id, suffix);
   else
-    fprintf(file, "%s{%lu,%" SATOM_FMT "}%s", prefix, base->id, base_get_refs(base), suffix);
+    fprintf(file, "%s{%lu,%" SATOM_FMT "}%s", prefix, noun_header->id, noun_header_get_refs(noun_header), suffix);
 }
 
 static void
-base_print_owners(FILE *file, const char *prefix, base_t *base, const char *suffix) {
+noun_header_print_owners(FILE *file, const char *prefix, noun_header_t *noun_header, const char *suffix) {
   const char *p = "";
 
   fprintf(file, "%s", prefix);
   for (int i = 0; i < OWNERS_SIZE; ++i) {
-    if (base->owners[i] != NULL) {
-      base_t *owner = base->owners[i];
+    if (noun_header->owners[i] != NULL) {
+      noun_header_t *owner = noun_header->owners[i];
       if (owner == STACK_OWNER)
 	fprintf(file, "%sSTACK", p);
       else if (owner == ROOT_OWNER)
@@ -169,7 +170,7 @@ base_print_owners(FILE *file, const char *prefix, base_t *base, const char *suff
       else if (owner == HEAP_OWNER)
 	fprintf(file, "%sHEAP", p);
       else
-	base_print_header(file, p, owner, "");
+	noun_header_print_header(file, p, owner, "");
       p = ", ";
     }
   }
@@ -177,10 +178,10 @@ base_print_owners(FILE *file, const char *prefix, base_t *base, const char *suff
 }
 
 static void
-base_add_owner(base_t *base, base_t *owner) {
+noun_header_add_owner(noun_header_t *noun_header, noun_header_t *owner) {
   for (int i = 0; i < OWNERS_SIZE; ++i) {
-    if (base->owners[i] == NULL) {
-      base->owners[i] = owner;
+    if (noun_header->owners[i] == NULL) {
+      noun_header->owners[i] = owner;
       return;
     }
   }
@@ -188,10 +189,10 @@ base_add_owner(base_t *base, base_t *owner) {
 }
 
 static void
-base_remove_owner(base_t *base, base_t *owner) {
+noun_header_remove_owner(noun_header_t *noun_header, noun_header_t *owner) {
   for (int i = 0; i < OWNERS_SIZE; ++i) {
-    if (base->owners[i] == owner) {
-      base->owners[i] = NULL;
+    if (noun_header->owners[i] == owner) {
+      noun_header->owners[i] = NULL;
       return;
     }
   }
@@ -238,8 +239,8 @@ typedef struct heap {
 #if ALLOC_DEBUG
   // A linked list of all allocated cells:
   unsigned long current_id;
-  base_t *first;
-  base_t *last;
+  noun_header_t *first;
+  noun_header_t *last;
 #endif
 #if CELL_FREE_LIST
   // A circular buffer of freed cells:
@@ -277,10 +278,10 @@ heap_print_stats(heap_t *heap, FILE *file) {
   fprintf(file, "batom_to_unshared=%lu\n", heap->batom_to_unshared);
 #endif
 #if ALLOC_DEBUG
-  for (base_t *base = heap->first; base != NULL; base = base->next) {
-    if (base_get_refs(base) != ALLOC_FREE_MARKER) {
-      base_print_header(file, "not freed: ", base, "\n");
-      base_print_owners(file, "   owners: ", base, "\n");
+  for (noun_header_t *noun_header = heap->first; noun_header != NULL; noun_header = noun_header->next) {
+    if (noun_header_get_refs(noun_header) != ALLOC_FREE_MARKER) {
+      noun_header_print_header(file, "not freed: ", noun_header, "\n");
+      noun_header_print_owners(file, "   owners: ", noun_header, "\n");
     }
   }
 #endif
@@ -335,14 +336,14 @@ heap_free(heap_t *heap) {
 
 #if ALLOC_DEBUG
 static void
-heap_register_debug(heap_t *heap, base_t *base) {
-  base->owners = (base_t **)calloc(1, sizeof(base_t *) * OWNERS_SIZE);
-  base->id = ++heap->current_id;
+heap_register_debug(heap_t *heap, noun_header_t *noun_header) {
+  noun_header->owners = (noun_header_t **)calloc(1, sizeof(noun_header_t *) * OWNERS_SIZE);
+  noun_header->id = ++heap->current_id;
   if (heap->last != NULL)
-    heap->last->next = base;
+    heap->last->next = noun_header;
   else
-    heap->first = base;
-  heap->last = base;
+    heap->first = noun_header;
+  heap->last = noun_header;
 }
 #endif
 
@@ -377,12 +378,12 @@ heap_alloc_cell(heap_t *heap) {
 #if CELL_FREE_LIST
   }
 #endif
-  base_t *base = &(cell->base);
+  noun_header_t *noun_header = &(cell->header);
 #if INLINE_REFS
-  base->refs = 0;
+  noun_header->refs = 0;
 #endif
 #if ALLOC_DEBUG
-  heap_register_debug(heap, &(cell->base));
+  heap_register_debug(heap, &(cell->header));
 #endif
   return cell;
 }
@@ -404,19 +405,16 @@ heap_alloc_batom(heap_t *heap) {
 #else /* #if !ARKHAM_URC */
   batom = (batom_t *)calloc(1, sizeof(batom_t));
 #endif /* #if ARKHAM_URC */
-  base_t *base = &(batom->base);
- // A cell can't point to itself. This distinguishes a batom from a cell.
-  base->left = (cell_ref_t)base;
 #if ALLOC_DEBUG
-  heap_register_debug(heap, base);
+  heap_register_debug(heap, noun_header);
 #endif
   return batom;
 }
 
 static URC_INLINE void
 heap_free_cell(heap_t *heap, cell_t *cell) {
-  ASSERT0(cell->base.refs != ALLOC_FREE_MARKER);
-  cell->base.refs = ALLOC_FREE_MARKER;
+  ASSERT0(cell->header.refs != ALLOC_FREE_MARKER);
+  cell->header.refs = ALLOC_FREE_MARKER;
 #if CELL_FREE_LIST
   if (heap->cell_free_list_size < CELL_FREE_LIST_SIZE) {
     heap->cell_free_list[(heap->cell_free_list_start + heap->cell_free_list_size) % CELL_FREE_LIST_SIZE] = cell;
@@ -444,63 +442,63 @@ heap_free_batom(heap_t *heap, batom_t *batom) {
   ASSERT0(heap->batom_free < heap->batom_alloc);
   ++heap->batom_free;
 #endif
-  ASSERT0(batom->base.refs != ALLOC_FREE_MARKER);
-  batom->base.refs = ALLOC_FREE_MARKER;
+  ASSERT0(batom->header.refs != ALLOC_FREE_MARKER);
+  batom->header.refs = ALLOC_FREE_MARKER;
 #if !ARKHAM_URC && !ALLOC_DEBUG
     free(batom);
 #endif /* #if !ARKHAM_URC && !ALLOC_DEBUG */
 }
 
 bool
-noun_is_freed(tagged_noun_t noun, heap_t *heap) {
+noun_is_freed(noun_t noun, heap_t *heap) {
   switch (noun_get_type(noun)) {
   case satom_type: return false;
   case batom_type:
   case cell_type: {
-    base_t *base = NOUN_AS_BASE(noun);
-    return base_get_refs(base) == ALLOC_FREE_MARKER;
+    noun_header_t *noun_header = NOUN_AS_NOUN_HEADER(noun);
+    return noun_header_get_refs(noun_header) == ALLOC_FREE_MARKER;
   }
   }
 }
 
 bool
-noun_is_valid_atom(tagged_noun_t noun, heap_t *heap) {
+noun_is_valid_atom(noun_t noun, heap_t *heap) {
   return !noun_is_freed(noun, heap) && noun_get_type(noun) != cell_type;
 }
 
 static bool
-noun_is_shared(tagged_noun_t noun, heap_t *heap) {
+noun_is_shared(noun_t noun, heap_t *heap) {
   ASSERT0(!noun_is_freed(noun, heap));
   switch (noun_get_type(noun)) {
   case satom_type: return true;
   case batom_type:
   case cell_type: {
-    base_t *base = NOUN_AS_BASE(noun);
-    return base_get_refs(base) > 1;
+    noun_header_t *noun_header = NOUN_AS_NOUN_HEADER(noun);
+    return noun_header_get_refs(noun_header) > 1;
   }
   }
 }
 
 #if ALLOC_DEBUG
 static unsigned long
-noun_get_id(tagged_noun_t noun) {
+noun_get_id(noun_t noun) {
   switch (noun_get_type(noun)) {
   case satom_type: ASSERT0(noun_get_type(noun) != satom_type);
   case batom_type:
   case cell_type: {
-    base_t *base = NOUN_AS_BASE(noun);
-    return base->id;
+    noun_header_t *noun_header = NOUN_AS_NOUN_HEADER(noun);
+    return noun_header->id;
   }
   }
 }
 #endif
 
 #if ALLOC_DEBUG
-tagged_noun_t
-noun_share(tagged_noun_t noun, heap_t *heap, base_t *owner) {
+noun_t
+noun_share(noun_t noun, heap_t *heap, noun_header_t *owner) {
 #else
-tagged_noun_t
-noun_share(tagged_noun_t noun, heap_t *heap) {
+noun_t
+noun_share(noun_t noun, heap_t *heap) {
 #endif
   ASSERT0(!ARKHAM_URC);
   ASSERT0(!noun_is_freed(noun, heap));
@@ -509,11 +507,11 @@ noun_share(tagged_noun_t noun, heap_t *heap) {
   case satom_type: return noun;
   case batom_type:
   case cell_type: {
-    base_t *base = NOUN_AS_BASE(noun);
+    noun_header_t *noun_header = NOUN_AS_NOUN_HEADER(noun);
 #if ALLOC_DEBUG
-    base_add_owner(base, owner);
+    noun_header_add_owner(noun_header, owner);
 #endif
-    satom_t refs = base_get_refs(base);
+    satom_t refs = noun_header_get_refs(noun_header);
     ASSERT0(refs != ALLOC_FREE_MARKER);
     if (refs == 1) {
       if (type == cell_type) {
@@ -521,7 +519,7 @@ noun_share(tagged_noun_t noun, heap_t *heap) {
 	if (heap->shared_cell_list_size < SHARED_CELL_LIST_SIZE) {
 	  // Defer the expense of reference counting.
 	  // See "noun_unshare".
-	  heap->shared_cell_list[heap->shared_cell_list_size++] = (cell_t *)base;
+	  heap->shared_cell_list[heap->shared_cell_list_size++] = (cell_t *)noun_header;
 	  // Return early (avoid the reference counting cost):
 	  return noun;
 	}
@@ -545,7 +543,7 @@ noun_share(tagged_noun_t noun, heap_t *heap) {
 #endif
       }
     }
-    base_inc_refs(base);
+    noun_header_inc_refs(noun_header);
     return noun;
   }
   }
@@ -553,10 +551,10 @@ noun_share(tagged_noun_t noun, heap_t *heap) {
 
 #if ALLOC_DEBUG
 void
-noun_unshare(tagged_noun_t noun, heap_t *heap, bool toplevel, base_t *owner) {
+noun_unshare(noun_t noun, heap_t *heap, bool toplevel, noun_header_t *owner) {
 #else
 void
-noun_unshare(tagged_noun_t noun, heap_t *heap, bool toplevel) {
+noun_unshare(noun_t noun, heap_t *heap, bool toplevel) {
 #endif
   ASSERT0(!ARKHAM_URC);
   ASSERT0(!noun_is_freed(noun, heap));
@@ -565,16 +563,16 @@ noun_unshare(tagged_noun_t noun, heap_t *heap, bool toplevel) {
   case satom_type: return;
   case batom_type:
   case cell_type: {
-    base_t *base = NOUN_AS_BASE(noun);
+    noun_header_t *noun_header = NOUN_AS_NOUN_HEADER(noun);
 #if ALLOC_DEBUG
-    base_remove_owner(base, owner);
+    noun_header_remove_owner(noun_header, owner);
 #endif
-    satom_t refs = base_get_refs(base);
+    satom_t refs = noun_header_get_refs(noun_header);
 #if SHARED_CELL_LIST
     if (type == cell_type) {
       unsigned int sz = heap->shared_cell_list_size;
       for (int i = 0; i < sz; ++i)
-	if (heap->shared_cell_list[i] == (cell_t *)base) {
+	if (heap->shared_cell_list[i] == (cell_t *)noun_header) {
 	  // This unshare matches a deferred pending share. Cancel them.
 	  // See "noun_share".
 	  heap->shared_cell_list[i] = heap->shared_cell_list[sz - 1];
@@ -588,8 +586,8 @@ noun_unshare(tagged_noun_t noun, heap_t *heap, bool toplevel) {
     ASSERT0(refs != ALLOC_FREE_MARKER);
     if (refs == 1) {
       if (type == cell_type) {
-	UNSHARE_CHILD(noun_get_left(noun), base);
-	UNSHARE_CHILD(noun_get_right(noun), base);
+	UNSHARE_CHILD(noun_get_left(noun), noun_header);
+	UNSHARE_CHILD(noun_get_right(noun), noun_header);
 	heap_free_cell(heap, noun_as_cell(noun));
 #if SHARED_CELL_LIST
 	if (toplevel) {
@@ -617,80 +615,45 @@ noun_unshare(tagged_noun_t noun, heap_t *heap, bool toplevel) {
 	}
       }
 #endif
-      base_dec_refs(base);
+      noun_header_dec_refs(noun_header);
     }
   }
   }
 }
 
-tagged_noun_t
-cell_set_left(tagged_noun_t noun, tagged_noun_t left, heap_t *heap) {
+noun_t
+cell_set_left(noun_t noun, noun_t left, heap_t *heap) {
   ASSERT0(noun_get_type(noun) == cell_type);
   cell_t *cell = noun_as_cell(noun);
   // XXX: if !logged then log
-  SHARE(left, &(cell->base));
-  UNSHARE(noun_get_left(noun), &(cell->base));
-#if FAT_NOUNS
-  cell->base.left = left.ptr;
-  return (tagged_noun_t){
-    .ptr = (noun_t *)
-    ((((satom_t)noun.ptr) & ~NOUN_PTR_SATOM_LEFT_FLAG) |
-     ((noun_get_type(left) == satom_type) ? NOUN_PTR_SATOM_LEFT_FLAG : 0)),
-    .flags = 0
-  };
-#else /* !FAT_NOUNS */
-  cell->base.left = left;
+  SHARE(left, &(cell->header));
+  UNSHARE(noun_get_left(noun), &(cell->header));
+  cell->left = left;
   return CELL_AS_NOUN(cell);
-#endif
 }
 
-tagged_noun_t
-cell_set_right(tagged_noun_t noun, tagged_noun_t right, heap_t *heap) {
+noun_t
+cell_set_right(noun_t noun, noun_t right, heap_t *heap) {
   ASSERT0(noun_get_type(noun) == cell_type);
   cell_t *cell = noun_as_cell(noun);
   // XXX: if !logged then log
-  SHARE(right, &(cell->base));
-  UNSHARE(noun_get_right(noun), &(cell->base));
-#if FAT_NOUNS
-  cell->right = right.ptr;
-  return (tagged_noun_t){
-    .ptr = (noun_t *)
-    ((((satom_t)noun.ptr) & ~NOUN_PTR_SATOM_RIGHT_FLAG) |
-     ((noun_get_type(right) == satom_type) ? NOUN_PTR_SATOM_RIGHT_FLAG : 0)),
-    .flags = 0
-  };
-#else /* !FAT_NOUNS */
+  SHARE(right, &(cell->header));
+  UNSHARE(noun_get_right(noun), &(cell->header));
   cell->right = right;
   return CELL_AS_NOUN(cell);
-#endif
 }
 
-tagged_noun_t URC_INLINE
-cell_new(heap_t *heap, tagged_noun_t left, tagged_noun_t right) {
+noun_t URC_INLINE
+cell_new(heap_t *heap, noun_t left, noun_t right) {
   cell_t *cell = heap_alloc_cell(heap);
-#if FAT_NOUNS
-  cell->base.left = left.ptr;
-  cell->right = right.ptr;
-#else /* !FAT_NOUNS */
-  cell->base.left = left;
+  cell->left = left;
   cell->right = right;
-#endif
-  SHARE(left, &(cell->base));
-  SHARE(right, &(cell->base));
-#if FAT_NOUNS
-  return (tagged_noun_t){
-    .ptr = (noun_t *)
-    (((satom_t)cell) |
-     ((noun_get_type(left) == satom_type) ? NOUN_PTR_SATOM_LEFT_FLAG : 0) |
-     ((noun_get_type(right) == satom_type) ? NOUN_PTR_SATOM_RIGHT_FLAG : 0)),
-    .flags = 0
-  };
-#else /* !FAT_NOUNS */
+  SHARE(left, &(cell->header));
+  SHARE(right, &(cell->header));
   return CELL_AS_NOUN(cell);
-#endif
 }
 
-tagged_noun_t URC_INLINE
+noun_t URC_INLINE
 batom_new(heap_t *heap, mpz_t val, bool clear) {
   batom_t *batom = heap_alloc_batom(heap);
   mpz_init(batom->val); // TODO: use custom allocator
@@ -700,22 +663,22 @@ batom_new(heap_t *heap, mpz_t val, bool clear) {
   return BATOM_AS_NOUN(batom);
 }
 
-tagged_noun_t
+noun_t
 batom_new_ui(heap_t *heap, unsigned long val) {
   batom_t *batom = heap_alloc_batom(heap);
   mpz_init_set_ui(batom->val, val);
   return BATOM_AS_NOUN(batom);
 }
 
-static tagged_noun_t
-batom_copy(tagged_noun_t noun, heap_t *heap) {
+static noun_t
+batom_copy(noun_t noun, heap_t *heap) {
   ASSERT0(!noun_is_freed(noun, heap));
   ASSERT0(noun_get_type(noun) == batom_type);
-  batom_t *batom = (batom_t *)NOUN_AS_BASE(noun);
+  batom_t *batom = (batom_t *)NOUN_AS_NOUN_HEADER(noun);
   return batom_new(heap, batom->val, false);
 }
 
-static tagged_noun_t
+static noun_t
 atom_new(heap_t *heap, const char *str) {
   mpz_t val;
   mpz_init_set_str(val, str, 10);
@@ -725,8 +688,8 @@ atom_new(heap_t *heap, const char *str) {
     return batom_new(heap, val, true);
 }
 
-tagged_noun_t
-atom_increment(tagged_noun_t noun) {
+noun_t
+atom_increment(noun_t noun) {
   ASSERT0(!noun_is_freed(noun, machine_get()->heap));
   ASSERT0(noun_get_type(noun) != cell_type);
 
@@ -749,8 +712,8 @@ atom_increment(tagged_noun_t noun) {
   return noun;
 }
 
-tagged_noun_t
-atom_equals(tagged_noun_t a, tagged_noun_t b) {
+noun_t
+atom_equals(noun_t a, noun_t b) {
   enum noun_type a_type = noun_get_type(a);
   enum noun_type b_type = noun_get_type(b);
 
@@ -765,8 +728,8 @@ atom_equals(tagged_noun_t a, tagged_noun_t b) {
     return (mpz_cmp(NOUN_AS_BATOM(a)->val, NOUN_AS_BATOM(b)->val) == 0) ? _YES : _NO;
 }
 
-tagged_noun_t
-atom_add(tagged_noun_t n1, tagged_noun_t n2) {
+noun_t
+atom_add(noun_t n1, noun_t n2) {
   ASSERT0(noun_is_valid_atom(n1, machine_get()->heap));
   ASSERT0(noun_is_valid_atom(n2, machine_get()->heap));
 
@@ -774,16 +737,11 @@ atom_add(tagged_noun_t n1, tagged_noun_t n2) {
     satom_t sn1 = noun_as_satom(n1);
     satom_t sn2 = noun_as_satom(n2);
     satom_t sum = sn1 + sn2;
-#if FAT_NOUNS
-    if (sum >= sn1 && sum >= sn2)
-      return satom_as_noun(sum);
-#else
     if ((sum & SATOM_OVERFLOW_BIT) == 0)
       return satom_as_noun(sum);
-#endif
   }
 
-  tagged_noun_t sum;
+  noun_t sum;
   heap_t *heap = machine_get()->heap;
 
   if (NOUN_IS_SATOM(n1))
@@ -802,7 +760,7 @@ atom_add(tagged_noun_t n1, tagged_noun_t n2) {
 }
 
 static bool
-atom_is_even(tagged_noun_t noun) {
+atom_is_even(noun_t noun) {
   enum noun_type type = noun_get_type(noun);
   ASSERT0(type != cell_type);
   if (type == satom_type)
@@ -812,11 +770,11 @@ atom_is_even(tagged_noun_t noun) {
   }
 }
 
-static tagged_noun_t
-batom_normalize(tagged_noun_t noun, heap_t *heap) {
+static noun_t
+batom_normalize(noun_t noun, heap_t *heap) {
   batom_t *batom = noun_as_batom(noun);
   if (!NO_SATOMS && mpz_cmp(batom->val, SATOM_MAX_MPZ) <= 0) {
-    tagged_noun_t result = satom_as_noun((satom_t)mpz_get_ui(batom->val));
+    noun_t result = satom_as_noun((satom_t)mpz_get_ui(batom->val));
     UNSHARE(noun, NULL);
     return result;
   } else {
@@ -825,7 +783,7 @@ batom_normalize(tagged_noun_t noun, heap_t *heap) {
 }
 
 static satom_t
-atom_get_satom(tagged_noun_t noun, bool *fits) {
+atom_get_satom(noun_t noun, bool *fits) {
   ASSERT0(noun_get_type(noun) != cell_type);
   if (noun_get_type(noun) == satom_type) {
     *fits = true;
@@ -842,8 +800,8 @@ atom_get_satom(tagged_noun_t noun, bool *fits) {
   }
 }
 
-static tagged_noun_t
-atom_div2(tagged_noun_t noun, heap_t *heap) {
+static noun_t
+atom_div2(noun_t noun, heap_t *heap) {
   ASSERT0(!noun_is_freed(noun, heap));
   enum noun_type type = noun_get_type(noun);
   ASSERT0(type != cell_type);
@@ -859,8 +817,8 @@ atom_div2(tagged_noun_t noun, heap_t *heap) {
   }
 }
 
-static tagged_noun_t
-atom_dec_div2(tagged_noun_t noun, heap_t *heap) {
+static noun_t
+atom_dec_div2(noun_t noun, heap_t *heap) {
   ASSERT0(!noun_is_freed(noun, heap));
   enum noun_type type = noun_get_type(noun);
   ASSERT0(type != cell_type);
@@ -873,7 +831,7 @@ atom_dec_div2(tagged_noun_t noun, heap_t *heap) {
     batom_t *batom = noun_as_batom(noun);
     mpz_sub_ui(batom->val, batom->val, 1);
     mpz_divexact_ui(batom->val, batom->val, 2);
-    tagged_noun_t result = batom_normalize(noun, heap);
+    noun_t result = batom_normalize(noun, heap);
     return result;
   }
 }
@@ -886,11 +844,11 @@ batom_print(FILE *file, batom_t *atom) {
 }
 
 static void
-cell_print(FILE *file, tagged_noun_t cell, bool brackets) {
+cell_print(FILE *file, noun_t cell, bool brackets) {
   ASSERT0(noun_get_type(cell) == cell_type);
   if (brackets) fprintf(file, "[");
 #if ALLOC_DEBUG_PRINT
-  base_print_header(file, "", &(noun_as_cell(cell)->base), "");
+  noun_header_print_header(file, "", &(noun_as_cell(cell)->header), "");
   fprintf(file, " ");
 #endif
   noun_print(file, noun_get_left(cell), true);
@@ -900,7 +858,7 @@ cell_print(FILE *file, tagged_noun_t cell, bool brackets) {
 }
 
 static void
-cell_print_decl(FILE *file, tagged_noun_t cell) {
+cell_print_decl(FILE *file, noun_t cell) {
   ASSERT0(noun_get_type(cell) == cell_type);
   fprintf(file, "CELL(");
   noun_print_decl(file, noun_get_left(cell));
@@ -910,7 +868,7 @@ cell_print_decl(FILE *file, tagged_noun_t cell) {
 }
 
 void
-noun_print(FILE *file, tagged_noun_t noun, bool brackets) {
+noun_print(FILE *file, noun_t noun, bool brackets) {
   switch (noun_get_type(noun)) {
   case cell_type:
     {
@@ -920,7 +878,7 @@ noun_print(FILE *file, tagged_noun_t noun, bool brackets) {
   case batom_type:
     {
 #if ALLOC_DEBUG_PRINT
-      base_print_header(file, "", &(noun_as_batom(noun)->base), "");
+      noun_header_print_header(file, "", &(noun_as_batom(noun)->header), "");
 #endif
       batom_print(file, noun_as_batom(noun));
       break;
@@ -934,7 +892,7 @@ noun_print(FILE *file, tagged_noun_t noun, bool brackets) {
 }
 
 static void
-noun_print_decl(FILE *file, tagged_noun_t noun) {
+noun_print_decl(FILE *file, noun_t noun) {
   switch (noun_get_type(noun)) {
   case cell_type:
     {
@@ -975,11 +933,11 @@ static const char *op_to_string(enum op_t op) {
   return op_string;
 }
 
-typedef struct { tagged_noun_t root; enum op_t op; } fn_ret_t;
+typedef struct { noun_t root; enum op_t op; } fn_ret_t;
 
-typedef fn_ret_t (*fn_t)(struct machine *machine, struct frame *frame, tagged_noun_t root);
+typedef fn_ret_t (*fn_t)(struct machine *machine, struct frame *frame, noun_t root);
 
-typedef struct frame { fn_t fn; tagged_noun_t data; } frame_t;
+typedef struct frame { fn_t fn; noun_t data; } frame_t;
 
 typedef struct fstack { 
   size_t capacity; 
@@ -1063,12 +1021,12 @@ stack_pop(fstack_t *stack, bool unshare, heap_t *heap) {
   return stack;
 }
 
-static tagged_noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
+static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
   heap_t *heap = machine->heap;
   vec_t token;
   vec_init(&token, sizeof(char));
   vec_t stack;
-  vec_init(&stack, sizeof(tagged_noun_t));
+  vec_init(&stack, sizeof(noun_t));
   int row = 1;
   int column = 1;
   vec_t count;
@@ -1082,7 +1040,7 @@ static tagged_noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
       if (vec_size(&token) > 0) {
 	char nul = 0;
 	vec_push(&token, &nul);
-	satom_t atom = atom_new(heap, vec_get(&token, 0));
+	noun_t atom = atom_new(heap, vec_get(&token, 0));
 	vec_push(&stack, &atom);
 	vec_clear(&token);
 	if (vec_size(&count) == 0) {
@@ -1120,16 +1078,16 @@ static tagged_noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
 	  exit(4); // TODO: recover instead of exit
 	}
 	for (int i = 1; i < *(int*)vec_get_top(&count); ++i) {
-	  tagged_noun_t right = *(tagged_noun_t *)vec_pop(&stack);
-	  tagged_noun_t left = *(tagged_noun_t *)vec_pop(&stack);
-	  tagged_noun_t cell = cell_new(heap, left, right);
+	  noun_t right = *(noun_t *)vec_pop(&stack);
+	  noun_t left = *(noun_t *)vec_pop(&stack);
+	  noun_t cell = cell_new(heap, left, right);
 	  vec_push(&stack, &cell);
 	}
 	vec_pop(&count);
 	if (vec_size(&count) > 0)
 	  ++(*(int *)vec_get_top(&count));
 	if (vec_size(&stack) == 1 && vec_size(&count) == 0) {
-	  return *(tagged_noun_t *)vec_get_top(&stack);
+	  return *(noun_t *)vec_get_top(&stack);
 	}
       } else if (c >= '0' && c <= '9') {
 	started = true;
@@ -1153,7 +1111,7 @@ static tagged_noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
 	if (vec_size(&token) > 0) {
 	  char nul = 0;
 	  vec_push(&token, &nul);
-	  tagged_noun_t atom = atom_new(heap, vec_get(&token, 0));
+	  noun_t atom = atom_new(heap, vec_get(&token, 0));
 	  vec_clear(&token);
 	  vec_push(&stack, &atom);
 	  if (vec_size(&count) == 0) {
@@ -1174,14 +1132,14 @@ static tagged_noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
     ++column;
   }
 
-  return *(tagged_noun_t *)vec_get_top(&stack);
+  return *(noun_t *)vec_get_top(&stack);
 }
 
 static void cite(FILE *file, int line, const char *suffix) {
   fprintf(file, "  ::  #%d%s", line, suffix);
 }
 
-static void trace(machine_t *machine, enum op_t op, tagged_noun_t noun) {
+static void trace(machine_t *machine, enum op_t op, noun_t noun) {
   FILE *file = machine->file;
   for (int i = 0; i < stack_size(machine->stack); ++i)
     fprintf(file, "__ ");
@@ -1194,28 +1152,28 @@ static void trace(machine_t *machine, enum op_t op, tagged_noun_t noun) {
 #define CITE_INLINE(line) if (ARKHAM_TRACE && trace_flag) cite(file, line, "")
 #define CITE_END(p) if (ARKHAM_TRACE && trace_flag && (p)) fprintf(file, "\n")
 #define PR(noun) do { fprintf(file, "%s: ", #noun); noun_print(file, noun, true); fprintf(file, "\n"); } while (false)
-#define ASSIGN(l, r, o) do { tagged_noun_t old = l; l = SHARE(r, o) ; UNSHARE(old, o); } while (false)
+#define ASSIGN(l, r, o) do { noun_t old = l; l = SHARE(r, o) ; UNSHARE(old, o); } while (false)
 #define L(noun) noun_get_left(noun)
 #define R(noun) noun_get_right(noun)
 #define T(noun) noun_get_type(noun)
 #define FRAME(cf, cd) (frame_t){ .fn = cf, .data = cd }
-#define FN tagged_noun_t
+#define FN noun_t
 #if NO_SATOMS
-tagged_noun_t _UNDEFINED;
-tagged_noun_t _0;
-tagged_noun_t _1;
-tagged_noun_t _2;
-tagged_noun_t _3;
-tagged_noun_t _4;
-tagged_noun_t _5;
-tagged_noun_t _6;
-tagged_noun_t _7;
-tagged_noun_t _8;
-tagged_noun_t _9;
-tagged_noun_t _10;
+noun_t _UNDEFINED;
+noun_t _0;
+noun_t _1;
+noun_t _2;
+noun_t _3;
+noun_t _4;
+noun_t _5;
+noun_t _6;
+noun_t _7;
+noun_t _8;
+noun_t _9;
+noun_t _10;
 #endif
 
-static void dump(machine_t *machine, frame_t *frame, tagged_noun_t root, const char *function) {
+static void dump(machine_t *machine, frame_t *frame, noun_t root, const char *function) {
   FILE *file = machine->file;
   fprintf(file, "root: "); noun_print(file, root, true); fprintf(file, "\n");
   fprintf(file, "data: "); noun_print(file, frame->data, true); fprintf(file, "\n");
@@ -1224,95 +1182,95 @@ static void dump(machine_t *machine, frame_t *frame, tagged_noun_t root, const c
 
 #define TF() if (ARKHAM_TRACE && machine->trace_flag) fprintf(machine->file, "function = %s\n", __FUNCTION__)
 
-static fn_ret_t f13(machine_t *machine, frame_t *frame, tagged_noun_t root) {
+static fn_ret_t f13(machine_t *machine, frame_t *frame, noun_t root) {
   TF();
   machine->stack = stack_pop(machine->stack, /* unshare */ false, machine->heap);
   heap_t *heap = machine->heap;
   return (fn_ret_t){ .root = SHARE(CELL(_2, root), ROOT_OWNER), .op = slash_op };
 }
 
-static fn_ret_t f14(machine_t *machine, frame_t *frame, tagged_noun_t root) {
+static fn_ret_t f14(machine_t *machine, frame_t *frame, noun_t root) {
   TF();
   machine->stack = stack_pop(machine->stack, /* unshare */ false, machine->heap);
   heap_t *heap = machine->heap;
   return (fn_ret_t){ .root = SHARE(CELL(_3, root), ROOT_OWNER), .op = slash_op };
 }
 
-static fn_ret_t f16p2(machine_t *machine, frame_t *frame, tagged_noun_t root) {
+static fn_ret_t f16p2(machine_t *machine, frame_t *frame, noun_t root) {
   TF();
   heap_t *heap = machine->heap;
-  tagged_noun_t next_root = SHARE(CELL(frame->data, root), ROOT_OWNER);
+  noun_t next_root = SHARE(CELL(frame->data, root), ROOT_OWNER);
   machine->stack = stack_pop(machine->stack, /* unshare */ true, heap);
   return (fn_ret_t){ .root = next_root, .op = ret_op };
 }
 
-static fn_ret_t f16p1(machine_t *machine, frame_t *frame, tagged_noun_t root) {
+static fn_ret_t f16p1(machine_t *machine, frame_t *frame, noun_t root) {
   TF();
   heap_t *heap = machine->heap;
-  tagged_noun_t next_root = SHARE(frame->data, ROOT_OWNER);
+  noun_t next_root = SHARE(frame->data, ROOT_OWNER);
   frame->fn = f16p2;
   ASSIGN(frame->data, root, STACK_OWNER);
   return (fn_ret_t){ .root = next_root, .op = nock_op };
 }
 
-static fn_ret_t f20p2(machine_t *machine, frame_t *frame, tagged_noun_t root) {
+static fn_ret_t f20p2(machine_t *machine, frame_t *frame, noun_t root) {
   TF();
   heap_t *heap = machine->heap;
-  tagged_noun_t next_root = SHARE(CELL(frame->data, root), ROOT_OWNER);
+  noun_t next_root = SHARE(CELL(frame->data, root), ROOT_OWNER);
   machine->stack = stack_pop(machine->stack, /* unshare */ true, heap);
   return (fn_ret_t){ .root = next_root, .op = nock_op };
 }
 
-static fn_ret_t f20p1(machine_t *machine, frame_t *frame, tagged_noun_t root) {
+static fn_ret_t f20p1(machine_t *machine, frame_t *frame, noun_t root) {
   TF();
   heap_t *heap = machine->heap;
   FILE *file = machine->file;
-  tagged_noun_t next_root = SHARE(frame->data, ROOT_OWNER);
+  noun_t next_root = SHARE(frame->data, ROOT_OWNER);
   frame->fn = f20p2;
   ASSIGN(frame->data, root, STACK_OWNER);
   return (fn_ret_t){ .root = next_root, .op = nock_op };
 }
 
-static fn_ret_t f21(machine_t *machine, frame_t *frame, tagged_noun_t root) {
+static fn_ret_t f21(machine_t *machine, frame_t *frame, noun_t root) {
   TF();
   heap_t *heap = machine->heap;
   machine->stack = stack_pop(machine->stack, /* unshare */ false, heap);
   return (fn_ret_t){ .root = SHARE(root, ROOT_OWNER), .op = cell_op };
 }
 
-static fn_ret_t f22(machine_t *machine, frame_t *frame, tagged_noun_t root) {
+static fn_ret_t f22(machine_t *machine, frame_t *frame, noun_t root) {
   TF();
   heap_t *heap = machine->heap;
   machine->stack = stack_pop(machine->stack, /* unshare */ false, heap);
   return (fn_ret_t){ .root = SHARE(root, ROOT_OWNER), .op = inc_op };
 }
 
-static fn_ret_t f23(machine_t *machine, frame_t *frame, tagged_noun_t root) {
+static fn_ret_t f23(machine_t *machine, frame_t *frame, noun_t root) {
   TF();
   heap_t *heap = machine->heap;
   machine->stack = stack_pop(machine->stack, /* unshare */ false, heap);
   return (fn_ret_t){ .root = SHARE(root, ROOT_OWNER), .op = equals_op };
 }
 
-static fn_ret_t f26(machine_t *machine, frame_t *frame, tagged_noun_t root) {
+static fn_ret_t f26(machine_t *machine, frame_t *frame, noun_t root) {
   TF();
   heap_t *heap = machine->heap;
-  tagged_noun_t next_root = SHARE(CELL(root, frame->data), ROOT_OWNER);
+  noun_t next_root = SHARE(CELL(root, frame->data), ROOT_OWNER);
   machine->stack = stack_pop(machine->stack, /* unshare */ true, heap);
   return (fn_ret_t){ .root = next_root, .op = nock_op };
 }
 
-static fn_ret_t f27(machine_t *machine, frame_t *frame, tagged_noun_t root) {
+static fn_ret_t f27(machine_t *machine, frame_t *frame, noun_t root) {
   TF();
   heap_t *heap = machine->heap;
-  tagged_noun_t next_root = SHARE(CELL(CELL(root, L(frame->data)), R(R(R(frame->data)))), ROOT_OWNER);
+  noun_t next_root = SHARE(CELL(CELL(root, L(frame->data)), R(R(R(frame->data)))), ROOT_OWNER);
   machine->stack = stack_pop(machine->stack, /* unshare */ true, heap);
   return (fn_ret_t){ .root = next_root, .op = nock_op };
 }
 
-static fn_ret_t cond2(machine_t *machine, frame_t *frame, tagged_noun_t root) {
+static fn_ret_t cond2(machine_t *machine, frame_t *frame, noun_t root) {
   TF();
-  tagged_noun_t data = frame->data;
+  noun_t data = frame->data;
   heap_t *heap = machine->heap;
   SHARE(data, COND2_OWNER);
   machine->stack = stack_pop(machine->stack, /* unshare */ true, machine->heap);
@@ -1322,10 +1280,10 @@ static fn_ret_t cond2(machine_t *machine, frame_t *frame, tagged_noun_t root) {
     if (!fits || (satom != 0 && satom != 1))
       CRASH(machine);
     heap_t *heap = machine->heap;
-    tagged_noun_t r = R(data);
-    tagged_noun_t next_root = SHARE(CELL(L(data), (satom == 0 ? L(r) : R(r))), ROOT_OWNER);
+    noun_t r = R(data);
+    noun_t next_root = SHARE(CELL(L(data), (satom == 0 ? L(r) : R(r))), ROOT_OWNER);
     UNSHARE(data, COND2_OWNER);
-    tagged_noun_t discard = (satom == 0 ? R(r) : L(r));
+    noun_t discard = (satom == 0 ? R(r) : L(r));
     return (fn_ret_t){ .root = next_root, .op = nock_op };
   } else {
     CRASH(machine);
@@ -1334,17 +1292,17 @@ static fn_ret_t cond2(machine_t *machine, frame_t *frame, tagged_noun_t root) {
   }
 }
 
-static fn_ret_t cond1(machine_t *machine, tagged_noun_t root) {
+static fn_ret_t cond1(machine_t *machine, noun_t root) {
   TF();
   heap_t *heap = machine->heap;
-  tagged_noun_t a = L(root);
-  tagged_noun_t r = R(root);
-  tagged_noun_t rr = R(r);
-  tagged_noun_t b = L(rr);
-  tagged_noun_t rrr = R(rr);
-  tagged_noun_t c = L(rrr);
-  tagged_noun_t d = R(rrr);
-  tagged_noun_t next_root;
+  noun_t a = L(root);
+  noun_t r = R(root);
+  noun_t rr = R(r);
+  noun_t b = L(rr);
+  noun_t rrr = R(rr);
+  noun_t c = L(rrr);
+  noun_t d = R(rrr);
+  noun_t next_root;
   bool implement_directly = true;
   if (implement_directly) {
     next_root = SHARE(CELL(a, b), ROOT_OWNER);
@@ -1361,7 +1319,7 @@ static inline void inc_ops(machine_t *machine) {
 #endif
 }
 
-static tagged_noun_t arkham_run_impl(machine_t *machine, enum op_t op, tagged_noun_t root) {
+static noun_t arkham_run_impl(machine_t *machine, enum op_t op, noun_t root) {
   heap_t *heap = machine->heap;
   FILE *file = machine->file;
   bool trace_flag = machine->trace_flag;
@@ -1391,71 +1349,71 @@ static tagged_noun_t arkham_run_impl(machine_t *machine, enum op_t op, tagged_no
 #endif
     LABEL(nock_op): {
       if (T(root) == cell_type) {
-	tagged_noun_t r = R(root);
+	noun_t r = R(root);
 	if (T(r) == cell_type) {
-	  tagged_noun_t rl = L(r);
+	  noun_t rl = L(r);
 	  if (T(rl) == cell_type) {
-	    CITE(16); tagged_noun_t l = L(root); tagged_noun_t nxt1 = CELL(l, CELL(L(rl), R(rl))); 
-	    tagged_noun_t nxt2 = CELL(l, R(r)); CALL1(nock_op, nxt1, f16p1, nxt2); 
+	    CITE(16); noun_t l = L(root); noun_t nxt1 = CELL(l, CELL(L(rl), R(rl))); 
+	    noun_t nxt2 = CELL(l, R(r)); CALL1(nock_op, nxt1, f16p1, nxt2); 
 	  } else /* if (T(rl) != cell_type) */ {
 	    bool fits;
 	    satom_t satom = atom_get_satom(rl, &fits);
 	    if (fits) {
 	      switch (satom) {
-	      case 0: { CITE(18); tagged_noun_t nxt = CELL(R(r), L(root)); TAIL_CALL(slash_op, nxt); }
-	      case 1: { CITE(19); tagged_noun_t nxt = R(r); tagged_noun_t l = L(root); RET(nxt); }
-	      case 2: { tagged_noun_t rr = R(r);
+	      case 0: { CITE(18); noun_t nxt = CELL(R(r), L(root)); TAIL_CALL(slash_op, nxt); }
+	      case 1: { CITE(19); noun_t nxt = R(r); noun_t l = L(root); RET(nxt); }
+	      case 2: { noun_t rr = R(r);
 		if (T(rr) == cell_type) { 
 		  CITE(20); 
-		  tagged_noun_t l = L(root);
-		  tagged_noun_t nxt1 = CELL(l, L(rr));
-		  tagged_noun_t nxt2 = CELL(l, R(rr));
+		  noun_t l = L(root);
+		  noun_t nxt1 = CELL(l, L(rr));
+		  noun_t nxt2 = CELL(l, R(rr));
 		  CALL1(nock_op, nxt1, f20p1, nxt2);
 		} else CRASH(machine);
 	      }
-	      case 3: { CITE(21); tagged_noun_t nxt = CELL(L(root), R(r)); CALL0(nock_op, nxt, f21); }
-	      case 4: { CITE(22); tagged_noun_t nxt = CELL(L(root), R(r)); CALL0(nock_op, nxt, f22); }
-	      case 5: { CITE(23); tagged_noun_t nxt = CELL(L(root), R(r)); CALL0(nock_op, nxt, f23); }
+	      case 3: { CITE(21); noun_t nxt = CELL(L(root), R(r)); CALL0(nock_op, nxt, f21); }
+	      case 4: { CITE(22); noun_t nxt = CELL(L(root), R(r)); CALL0(nock_op, nxt, f22); }
+	      case 5: { CITE(23); noun_t nxt = CELL(L(root), R(r)); CALL0(nock_op, nxt, f23); }
 	      case 6: { CITE(25); fn_ret_t fn_ret = cond1(machine, root); op = fn_ret.op; UNSHARE(root, ROOT_OWNER); root = fn_ret.root; NEXT_OP(op); }
-	      case 7: { tagged_noun_t rr = R(r);
+	      case 7: { noun_t rr = R(r);
 		if (T(rr) == cell_type) { 
 		  CITE(26); 
 		  bool implement_directly = true;
 		  if (implement_directly) {
 		    // 7r ::     *[a 7 b c]         *[*[a b] c]
-		    tagged_noun_t nxt1 = CELL(L(root), L(rr)); tagged_noun_t nxt2 = R(rr); CALL1(nock_op, nxt1, f26, nxt2);
+		    noun_t nxt1 = CELL(L(root), L(rr)); noun_t nxt2 = R(rr); CALL1(nock_op, nxt1, f26, nxt2);
 		  } else {
-		    tagged_noun_t nxt = CELL(L(root), CELL(_2, CELL(L(rr), CELL(_1, R(rr)))));
+		    noun_t nxt = CELL(L(root), CELL(_2, CELL(L(rr), CELL(_1, R(rr)))));
 		    TAIL_CALL(nock_op, nxt);
 		  }
 		} else CRASH(machine);
 	      }
-	      case 8: { tagged_noun_t rr = R(r);
+	      case 8: { noun_t rr = R(r);
 		if (T(rr) == cell_type) { 
 		  CITE(27); 
 		  bool implement_directly = true;
 		  if (implement_directly) {
 		    // 8r ::     *[a 8 b c]        *[[*[a b] a] c]
-		    tagged_noun_t l = L(root); tagged_noun_t nxt1 = CELL(l, L(rr)); CALL1(nock_op, nxt1, f27, root);
+		    noun_t l = L(root); noun_t nxt1 = CELL(l, L(rr)); CALL1(nock_op, nxt1, f27, root);
 		  } else {
-		    tagged_noun_t nxt = CELL(L(root), CELL(_7, CELL(CELL(CELL(_7, CELL(CELL(_0, _1), L(rr))), CELL(_0, _1)), R(rr))));
+		    noun_t nxt = CELL(L(root), CELL(_7, CELL(CELL(CELL(_7, CELL(CELL(_0, _1), L(rr))), CELL(_0, _1)), R(rr))));
 		    TAIL_CALL(nock_op, nxt);
 		  }
 		} else CRASH(machine);
 	      }
-	      case 9: { tagged_noun_t rr = R(r);
+	      case 9: { noun_t rr = R(r);
 		if (T(rr) == cell_type) { 
 		  CITE(28); 
 		  // TODO: implement direct reduction
-		  tagged_noun_t nxt = CELL(L(root), CELL(_7, CELL(R(rr), CELL(_2, CELL(CELL(_0, _1), CELL(_0, L(rr)))))));
+		  noun_t nxt = CELL(L(root), CELL(_7, CELL(R(rr), CELL(_2, CELL(CELL(_0, _1), CELL(_0, L(rr)))))));
 		  TAIL_CALL(nock_op, nxt);
 		} else CRASH(machine);
 	      }
-	      case 10: { tagged_noun_t rr = R(r);
+	      case 10: { noun_t rr = R(r);
 		if (T(rr) == cell_type) { 
 		  CITE(29); 
-		  tagged_noun_t rrl = L(rr);
-		  tagged_noun_t nxt;
+		  noun_t rrl = L(rr);
+		  noun_t nxt;
 		  if (T(rrl) == cell_type) { 
 		    // TODO: implement direct reduction
 		    nxt = CELL(L(root), CELL(_8, CELL(R(rrl), CELL(_7, CELL(CELL(_0, _2), R(rr))))));
@@ -1480,22 +1438,22 @@ static tagged_noun_t arkham_run_impl(machine_t *machine, enum op_t op, tagged_no
 
     LABEL(slash_op): {
       if (T(root) == cell_type) {
-	tagged_noun_t l = L(root);
+	noun_t l = L(root);
 	if (T(l) == cell_type) CRASH(machine);
 	else {
 	  bool fits;
 	  satom_t satom = atom_get_satom(l, &fits);
 	  if (fits) {
-	    if (satom == 1) { CITE(10); tagged_noun_t nxt = R(root); RET(nxt); }
+	    if (satom == 1) { CITE(10); noun_t nxt = R(root); RET(nxt); }
 	    else {
-	      tagged_noun_t r = R(root);
+	      noun_t r = R(root);
 	      if (T(r) == cell_type) {
 		bool implement_directly = true;
 		if (implement_directly) {
 		  // Run through the bits from left to right:
 		  int msb = (sizeof(satom) * 8 - __builtin_clzl(satom) - 1);
 		  satom_t mask = (1 << (msb - 1));
-		  tagged_noun_t nxt = r;
+		  noun_t nxt = r;
 		  for (int i = 0; i < msb; ++i) {
 		    if (mask & satom) {
 		      CITE_INLINE(12); nxt = R(nxt);
@@ -1507,8 +1465,8 @@ static tagged_noun_t arkham_run_impl(machine_t *machine, enum op_t op, tagged_no
 		  CITE_END(msb > 0);
 		  RET(nxt);
 		} else {
-		  if (satom == 2) { CITE(11); tagged_noun_t nxt = L(r); tagged_noun_t rr = R(r); RET(nxt); }
-		  else if (satom == 3) { CITE(12); tagged_noun_t nxt = R(r); tagged_noun_t lr = L(r); RET(nxt); }
+		  if (satom == 2) { CITE(11); noun_t nxt = L(r); noun_t rr = R(r); RET(nxt); }
+		  else if (satom == 3) { CITE(12); noun_t nxt = R(r); noun_t lr = L(r); RET(nxt); }
 		  /* else fall through to even/odd check */
 		}
 	      } else /* if (T(r) != cell_type) */ {
@@ -1516,8 +1474,8 @@ static tagged_noun_t arkham_run_impl(machine_t *machine, enum op_t op, tagged_no
 	      }
 	    }
 	  } /* else fall through to even/odd check */
-	  if (atom_is_even(l)) { CITE(13); tagged_noun_t nxt = CELL(atom_div2(l, heap), R(root)); CALL0(slash_op, nxt, f13); }
-	  else { CITE(14); tagged_noun_t nxt = CELL(atom_dec_div2(l, heap), R(root)); CALL0(slash_op, nxt, f14); }
+	  if (atom_is_even(l)) { CITE(13); noun_t nxt = CELL(atom_div2(l, heap), R(root)); CALL0(slash_op, nxt, f13); }
+	  else { CITE(14); noun_t nxt = CELL(atom_dec_div2(l, heap), R(root)); CALL0(slash_op, nxt, f14); }
 	}
       } else /* if (T(root) != cell_type) */ {
 	CITE(34); CRASH(machine);
@@ -1542,9 +1500,9 @@ static tagged_noun_t arkham_run_impl(machine_t *machine, enum op_t op, tagged_no
 
     LABEL(equals_op): {
       if (T(root) == cell_type) {
-	tagged_noun_t l = L(root);
+	noun_t l = L(root);
 	if (T(l) != cell_type) {
-	  tagged_noun_t r = R(root);
+	  noun_t r = R(root);
 	  if (T(r) != cell_type && NOUN_EQUALS(atom_equals(l, r), _YES)) {
 	    CITE(7) ; RET(_0);	    
 	  } else {
@@ -1652,7 +1610,7 @@ static void arkham_run(int n_inputs, infile_t *inputs, bool trace_flag, bool int
       do {
 	// TODO: use readline (or editline)
 	if (interactive_flag) printf("> ");
-	tagged_noun_t top = parse(&machine, input, &eof);
+	noun_t top = parse(&machine, input, &eof);
 	if (NOUN_IS_DEFINED(top)) {
 	  noun_print(stdout, arkham_run_impl(&machine, nock_op, top), true); printf("\n");
 	}

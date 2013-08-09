@@ -11,9 +11,6 @@
 #ifndef ARKHAM_LLVM
 #define ARKHAM_LLVM true
 #endif
-#ifndef FAT_NOUNS
-#define FAT_NOUNS false
-#endif
 
 #define ALLOC_DEBUG (!ARKHAM_PRODUCTION && !ARKHAM_URC)
 #define ARKHAM_TRACE (!ARKHAM_PRODUCTION)

@@ -122,10 +122,55 @@ struct fstack;
 
 struct frame;
 
+typedef struct heap {
+#if ARKHAM_STATS
+  unsigned long cell_alloc;
+  unsigned long cell_free_list_alloc;
+  unsigned long cell_free;
+  unsigned long cell_free_list_free;
+  unsigned long cell_max;
+  unsigned long cell_shared;
+  unsigned long cell_max_shared;
+  unsigned long cell_to_shared;
+  unsigned long cell_to_unshared;
+  unsigned long cell_overflow_to_shared;
+  unsigned long cell_stably_shared;
+  unsigned long batom_alloc;
+  unsigned long batom_free;
+  unsigned long batom_max;
+  unsigned long batom_shared;
+  unsigned long batom_max_shared;
+  unsigned long batom_to_shared;
+  unsigned long batom_to_unshared;
+#endif
+#if ARKHAM_URC
+  char *nursery_start;
+  char *nursery_current;
+  char *nursery_end;
+#endif /* ARKHAM_URC */
+#if ALLOC_DEBUG
+  // A linked list of all allocated cells:
+  unsigned long current_id;
+  noun_header_t *first;
+  noun_header_t *last;
+#endif
+#if CELL_FREE_LIST
+  // A circular buffer of freed cells:
+  unsigned int cell_free_list_start;
+  unsigned int cell_free_list_size;
+  cell_t *cell_free_list[CELL_FREE_LIST_SIZE];
+#endif
+#if SHARED_CELL_LIST
+  // TODO: Keep the pointers to cell_t* as well (for updating in place).
+  unsigned int shared_cell_list_size;
+  cell_t *shared_cell_list[SHARED_CELL_LIST_SIZE];
+#endif
+} heap_t;
+
 /* The machine struct represents the execution state of the runtime. */
 typedef struct machine {
   struct fstack *stack;
-  struct heap *heap;
+  heap_t *heap;
   FILE *file;
 #if ARKHAM_LLVM
   struct llvm_s *llvm;
@@ -145,33 +190,60 @@ typedef struct machine {
 #define NOUN_FLAGS (NOUN_NOT_SATOM_FLAG | NOUN_CELL_FLAG)
 #define NOUN_AS_PTR(noun) ((noun).value & ~(satom_t)NOUN_FLAGS)
 #define NOUN_AS_NOUN_HEADER(noun) ((noun_header_t *)NOUN_AS_PTR(noun))
-#define CELL_AS_NOUN(cell) ((noun_t){ .value = (satom_t)(cell) | NOUN_CELL_FLAG | NOUN_NOT_SATOM_FLAG })
+#define CELL_AS_NOUN(cell) ((noun_t){ .value = (satom_t)(cell) | \
+  NOUN_CELL_FLAG | NOUN_NOT_SATOM_FLAG })
 #define NOUN_EQUALS(n1, n2) ((n1).value == (n2).value)
-#define BATOM_AS_NOUN(batom) ((noun_t){ .value = (satom_t)(batom) | NOUN_NOT_SATOM_FLAG })
+#define BATOM_AS_NOUN(batom) ((noun_t){ .value = (satom_t)(batom) | \
+  NOUN_NOT_SATOM_FLAG })
 #define SATOM_AS_NOUN(satom) ((noun_t){ .value = ((satom)<<1)})
 #define RAW_VALUE_AS_NOUN(raw_value) ((noun_t){ .value = raw_value })
 #define NOUN_AS_SATOM(noun) ((satom_t)((noun).value>>1))
 #define NOUN_IS_SATOM(noun) ((((noun).value & NOUN_NOT_SATOM_FLAG)) == 0)
-#define NOUN_IS_CELL(noun) ((((noun).value & (NOUN_NOT_SATOM_FLAG | NOUN_CELL_FLAG))) == (NOUN_NOT_SATOM_FLAG | NOUN_CELL_FLAG))
-#define NOUN_IS_BATOM(noun) ((((noun).value & (NOUN_NOT_SATOM_FLAG | NOUN_CELL_FLAG))) == NOUN_NOT_SATOM_FLAG)
-#define SATOM_MAX (((satom_t)SATOM_T_MAX)>>1)
-#define SATOM_OVERFLOW_BIT (((satom_t)1)<<(sizeof(satom_t)*8-1))
+#define NOUN_IS_CELL(noun) ((((noun).value & (NOUN_NOT_SATOM_FLAG | \
+  NOUN_CELL_FLAG))) == (NOUN_NOT_SATOM_FLAG | NOUN_CELL_FLAG))
+#define NOUN_IS_BATOM(noun) ((((noun).value & (NOUN_NOT_SATOM_FLAG | \
+  NOUN_CELL_FLAG))) == NOUN_NOT_SATOM_FLAG)
+#define SATOM_MAX (((satom_t)SATOM_T_MAX) >> 1)
+#define SATOM_OVERFLOW_BIT (((satom_t)1) << (sizeof(satom_t)*8-1))
 
 #define _UNDEFINED BATOM_AS_NOUN(NULL)
 #define NOUN_AS_CELL(noun) ((cell_t *)NOUN_AS_NOUN_HEADER(noun))
 #define NOUN_AS_BATOM(noun) ((batom_t *)NOUN_AS_NOUN_HEADER(noun))
 #define NOUN_IS_UNDEFINED(noun) NOUN_EQUALS(noun, _UNDEFINED)
 #define NOUN_IS_DEFINED(noun) !NOUN_IS_UNDEFINED(noun)
+#if ARKHAM_URC
+#if ARKHAM_ASSERT
+#define CELLS(count) cell_t *cellp[1]; int _requested = count; \
+  cell_t *_first = cellp[0] = heap_alloc_cells(heap, count)
+#define CELL(left, right) cell_new(&(cellp[0]), left, right)
+#define END_CELLS() ASSERT(_requested == (cellp[0] - _first), \
+  "Wrong number of allocations\n");
+#else /* #if !ARKHAM_ASSERT */
+#define CELLS(count) cell_t *cellp[1]; cellp[0] = heap_alloc_cells(heap, count)
+#define CELL(left, right) cell_new(&(cellp[0]), left, right)
+#define END_CELLS() do { } while (false)
+#endif /* #if ARKHAM_ASSERT */
+#else /* #if !ARKHAM_URC */
+#define CELLS(count) do { } while(false)
 #define CELL(left, right) cell_new(heap, left, right)
+#define END_CELLS() do { } while (false)
+#endif /* #if ARKHAM_URC */
 
 /* Owners from the "root set": */
-#define STACK_OWNER ((noun_header_t *)1) /* For the stack */
-#define ROOT_OWNER ((noun_header_t *)2) /* For interpreter locals */
-#define COND2_OWNER ((noun_header_t *)3) /* Special for the "cond" function */
-#define HEAP_OWNER ((noun_header_t *)4) /* For static variables */
-#define ENV_OWNER ((noun_header_t *)5) /* For the environment during compilation */
-#define AST_OWNER ((noun_header_t *)6) /* For the AST during compilation */
-#define LOCALS_OWNER ((noun_header_t *)7) /* For the local variables during abstract interpretation */
+/* For the stack */
+#define STACK_OWNER ((noun_header_t *)1)
+/* For interpreter locals */
+#define ROOT_OWNER ((noun_header_t *)2)
+/* Special for the "cond" function */
+#define COND2_OWNER ((noun_header_t *)3)
+/* For static variables */
+#define HEAP_OWNER ((noun_header_t *)4)
+/* For the environment during compilation */
+#define ENV_OWNER ((noun_header_t *)5)
+/* For the AST during compilation */
+#define AST_OWNER ((noun_header_t *)6)
+/* For the local variables during abstract interpretation */
+#define LOCALS_OWNER ((noun_header_t *)7)
 
 #if NO_SATOMS
 extern noun_t _UNDEFINED;
@@ -211,7 +283,9 @@ void machine_set(machine_t *m);
 
 void arkham_crash(machine_t *machine, const char *format, ...);
 
-void arkham_fail(const char *predicate, const char *file, const char *function, int line_number, const char *format, ...);
+void arkham_fail(const char *predicate, const char *file, 
+		 const char *function, int line_number, 
+		 const char *format, ...);
 
 void arkham_log(const char *format, ...);
 
@@ -260,17 +334,21 @@ noun_get_right(noun_t noun) {
   return noun_as_cell(noun)->right;
 }
 
-noun_t cell_set_left(noun_t noun, noun_t left, struct heap *heap);
+noun_t cell_set_left(noun_t noun, noun_t left, heap_t *heap);
 
-noun_t cell_set_right(noun_t noun, noun_t left, struct heap *heap);
+noun_t cell_set_right(noun_t noun, noun_t left, heap_t *heap);
 
 void noun_print(FILE *file, noun_t noun, bool brackets);
 
 const char *noun_type_to_string(enum noun_type noun_type);
 
-noun_t cell_new(struct heap *heap, noun_t left, noun_t right);
+#if ARKHAM_URC
+noun_t cell_new(struct cell **cellp, noun_t left, noun_t right);
+#else /* #if !ARKHAM_URC */
+noun_t cell_new(heap_t *heap, noun_t left, noun_t right);
+#endif /* #if ARKHAM_URC */
 
-bool noun_is_valid_atom(noun_t noun, struct heap *heap);
+bool noun_is_valid_atom(noun_t noun, heap_t *heap);
 
 noun_t atom_add(noun_t n1, noun_t n2);
 
@@ -278,19 +356,55 @@ noun_t atom_equals(noun_t n1, noun_t n2);
 
 noun_t atom_increment(noun_t noun);
 
-noun_t batom_new(struct heap *heap, mpz_t val, bool clear);
+noun_t batom_new(heap_t *heap, mpz_t val, bool clear);
 
-noun_t batom_new_ui(struct heap *heap, unsigned long val);
+noun_t batom_new_ui(heap_t *heap, unsigned long val);
 
 #if ALLOC_DEBUG
-noun_t noun_share(noun_t noun, struct heap *heap, noun_header_t *owner);
+noun_t noun_share(noun_t noun, heap_t *heap, noun_header_t *owner);
 
-void noun_unshare(noun_t noun, struct heap *heap, bool toplevel, noun_header_t *owner);
+void noun_unshare(noun_t noun, heap_t *heap, bool toplevel, noun_header_t *owner);
 #else
-noun_t noun_share(noun_t noun, struct heap *heap);
+noun_t noun_share(noun_t noun, heap_t *heap);
 
-void noun_unshare(noun_t noun, struct heap *heap, bool toplevel);
+void noun_unshare(noun_t noun, heap_t *heap, bool toplevel);
 #endif
+
+#if ARKHAM_STATS
+void heap_alloc_cells_stats(heap_t *heap, int count);
+#endif
+
+void collect_garbage(size_t size);
+
+static inline char *
+heap_alloc(heap_t *heap, size_t size) {
+  char *chunk;
+
+#if ARKHAM_URC
+  char *nursery_next = heap->nursery_current + size;
+  if (nursery_next > heap->nursery_end) {
+    collect_garbage(size);
+    nursery_next = heap->nursery_current + size;
+  }
+  chunk = heap->nursery_current;
+  heap->nursery_current = nursery_next;
+#else /* #if !ARKHAM_URC */
+  chunk = (cell_t *)calloc(1, size);
+#endif /* #if ARKHAM_URC */
+
+  return chunk;
+}
+
+static inline cell_t *
+heap_alloc_cells(heap_t *heap, int count) {
+  cell_t *cell = (cell_t *)heap_alloc(heap, count * sizeof(cell_t));
+
+#if ARKHAM_STATS
+  heap_alloc_cells_stats(heap, count);
+#endif
+
+  return cell;
+}
 
 typedef struct vec_s {
   size_t elem_count;

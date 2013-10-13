@@ -37,10 +37,12 @@
 // REVISIT: cache result of "getGlobalContext()"?
 #if UINTPTR_MAX == UINT64_MAX
 #define llvm_noun_type() Type::getInt64Ty(getGlobalContext())
-#define LLVM_NOUN(noun) ConstantInt::get(getGlobalContext(), APInt(64, (noun).value))
+#define LLVM_NOUN(noun) ConstantInt::get(getGlobalContext(), \
+  APInt(64, (noun).value))
 #else
 #define llvm_noun_type() Type::getInt32Ty(getGlobalContext())
-#define LLVM_NOUN(noun) ConstantInt::get(getGlobalContext(), APInt(32, (noun).value))
+#define LLVM_NOUN(noun) ConstantInt::get(getGlobalContext(), \
+  APInt(32, (noun).value))
 #endif
 
 using namespace llvm;
@@ -48,9 +50,20 @@ using namespace llvm;
 
 #include "arkham.h"
 
-#define ENV_FAIL(env, pstr, msg) env->fail(pstr, msg, __FILE__, __FUNCTION__, __LINE__);
-#define ENV_CHECK_VOID(env, p, msg) do { const char *pstr = #p; if (!(p)) { ENV_FAIL(env, pstr, msg); return; } } while(false)
-#define ENV_CHECK(env, p, msg, val) do { const char *pstr = #p; if (!(p)) { ENV_FAIL(env, pstr, msg) return val; } } while(false)
+#define ENV_FAIL(env, pstr, msg) env->fail(pstr, msg, __FILE__, __FUNCTION__, \
+  __LINE__);
+#define ENV_CHECK_VOID(env, p, msg) do { \
+  const char *pstr = #p; \
+  if (!(p)) { \
+    ENV_FAIL(env, pstr, msg); return; \
+  } \
+} while(false)
+#define ENV_CHECK(env, p, msg, val) do { \
+  const char *pstr = #p; \
+  if (!(p)) { \
+    ENV_FAIL(env, pstr, msg) return val; \
+  } \
+} while(false)
 
 __thread machine_t *machine;
 
@@ -89,7 +102,8 @@ public:
       if (i > 0)
 	fprintf(fp, " ");
       char instruction = instructions[i];
-      fprintf(fp, "0x%c%c", hex[(instruction >> 4) & 0xf], hex[instruction & 0xf]);
+      fprintf(fp, "0x%c%c", hex[(instruction >> 4) & 0xf],
+	      hex[instruction & 0xf]);
     }
     fprintf(fp, "\n");
     fclose(fp);
@@ -121,16 +135,28 @@ llvm_t *llvm_new(const char *module_name) {
 
   std::vector<Type*> parameter_types;
   parameter_types.push_back(llvm_noun_type());
-  FunctionType *function1_type = FunctionType::get(llvm_noun_type(), parameter_types, /* is_vararg */ false);
-  llvm->uadd_with_overflow = Intrinsic::getDeclaration(llvm->module, Intrinsic::uadd_with_overflow, parameter_types);
+  FunctionType *function1_type = FunctionType::get(llvm_noun_type(),
+						   parameter_types,
+						   /* is_vararg */ false);
+  llvm->uadd_with_overflow = Intrinsic::getDeclaration(llvm->module,
+    Intrinsic::uadd_with_overflow, parameter_types);
   parameter_types.push_back(llvm_noun_type());
-  FunctionType *function2_type = FunctionType::get(llvm_noun_type(), parameter_types, /* is_vararg */ false);
+  FunctionType *function2_type = FunctionType::get(llvm_noun_type(),
+						   parameter_types,
+						   /* is_vararg */ false);
 
-  Function* atom_increment_fn = Function::Create(function1_type, Function::ExternalLinkage, "atom_increment", llvm->module);
+  Function* atom_increment_fn = Function::Create(function1_type,
+						 Function::ExternalLinkage,
+						 "atom_increment",
+						 llvm->module);
   llvm->engine->addGlobalMapping(atom_increment_fn, (void *)atom_increment);
-  Function* atom_equals_fn = Function::Create(function2_type, Function::ExternalLinkage, "atom_equals", llvm->module);
+  Function* atom_equals_fn = Function::Create(function2_type,
+					      Function::ExternalLinkage,
+					      "atom_equals", llvm->module);
   llvm->engine->addGlobalMapping(atom_equals_fn, (void *)atom_equals);
-  Function* atom_add_fn = Function::Create(function2_type, Function::ExternalLinkage, "atom_add", llvm->module);
+  Function* atom_add_fn = Function::Create(function2_type,
+					   Function::ExternalLinkage,
+					   "atom_add", llvm->module);
   llvm->engine->addGlobalMapping(atom_add_fn, (void *)atom_add);
 
   // Setup optimizations.
@@ -176,7 +202,8 @@ void machine_set(machine_t *m) {
 //ZZZ
 extern noun_t
 fib(noun_t n) {
-  ASSERT(noun_is_valid_atom(n, machine->heap), "noun_is_valid_atom(n, machine->heap)\n");
+  ASSERT(noun_is_valid_atom(n, machine->heap), "noun_is_valid_atom(n, "
+	 "machine->heap)\n");
 
   noun_t f0 = _0;
   noun_t f1 = _1;
@@ -209,7 +236,9 @@ noun_nop(noun_t noun) {
 #define UNSHARE(noun, o) noun_unshare(noun, machine->heap, true)
 #endif /* #if ARKHAM_URC */
 
-#define ASSIGN(l, r, o) do { noun_t old = l; l = SHARE(r, o) ; UNSHARE(old, o); } while (false)
+#define ASSIGN(l, r, o) do { \
+  noun_t old = l; l = SHARE(r, o) ; UNSHARE(old, o); \
+} while (false)
 
 // Addresses a node in a tree: an argument to the slash operator.
 typedef uint32_t jit_address_t;
@@ -337,7 +366,8 @@ namespace jit {
 	// Use an "impossible" value as the placeholder:
 	args_placeholder = batom_new_ui(machine->heap, JIT_INDEX_MAX + 1UL);
 	SHARE(args_placeholder, ENV_OWNER);
-	loop_body_placeholder = batom_new_ui(machine->heap, JIT_INDEX_MAX + 2UL);
+	loop_body_placeholder = batom_new_ui(machine->heap,
+					     JIT_INDEX_MAX + 2UL);
 	SHARE(loop_body_placeholder, ENV_OWNER);
 	local_variable_index_map = args_placeholder;
 	SHARE(local_variable_index_map, ENV_OWNER);
@@ -363,7 +393,9 @@ namespace jit {
 #endif
       }
 
-      void fail(const char *predicate, const char *failure_message, const char *file_name, const char *function_name, int line_number) {
+      void fail(const char *predicate, const char *failure_message,
+		const char *file_name, const char *function_name,
+		int line_number) {
 	this->failed = true;
 	this->predicate = predicate;
 	this->failure_message = failure_message;
@@ -371,7 +403,10 @@ namespace jit {
 	this->function_name = function_name;
 	this->line_number = line_number;
 
-	arkham_log(ERROR_PREFIX " Failure to compile: predicate = '%s', message = '%s', file = '%s', function = '%s', line = %d\n", predicate, failure_message, file_name, function_name, line_number);
+	arkham_log(ERROR_PREFIX " Failure to compile: predicate = '%s', "
+		   "message = '%s', file = '%s', function = '%s', line = %d\n",
+		   predicate, failure_message, file_name, function_name,
+		   line_number);
       }
 
       char *make_var_name(const char *prefix, satom_t satom) {
@@ -386,7 +421,8 @@ namespace jit {
 
 #if ARKHAM_LLVM
       Value *compile_alloca(const char *var_name) {
-	IRBuilder<> builder(&function->getEntryBlock(), function->getEntryBlock().begin());
+	IRBuilder<> builder(&function->getEntryBlock(),
+			    function->getEntryBlock().begin());
 	return builder.CreateAlloca(llvm_noun_type(), 0, var_name);
       }
 #endif /* ARKHAM_LLVM */
@@ -394,14 +430,17 @@ namespace jit {
       jit_index_t allocate_local(noun_t initial_value) {
 	if (failed) return 0;
 
-	ENV_CHECK(this, next_local_variable_index < JIT_INDEX_MAX, "Too many local variable declarations", 0);
+	ENV_CHECK(this, next_local_variable_index < JIT_INDEX_MAX,
+		  "Too many local variable declarations", 0);
 	jit_index_t index = next_local_variable_index++;
-	locals.resize(index + 1, LocalVariable(make_var_name("local", index), initial_value, LOCALS_OWNER));
+	locals.resize(index + 1, LocalVariable(make_var_name("local", index),
+					       initial_value, LOCALS_OWNER));
 #if ARKHAM_LLVM
 	LocalVariable &local = locals.at(index);
 	local.llvm_value = compile_alloca(local.name);
 #endif /* ARKHAM_LLVM */
-	next_locals.resize(index + 1, LocalVariable(make_var_name("next_local", index), initial_value, LOCALS_OWNER));
+	next_locals.resize(index + 1, LocalVariable(make_var_name(
+          "next_local", index), initial_value, LOCALS_OWNER));
 #if ARKHAM_LLVM
 	LocalVariable &next_local = next_locals.at(index);
 	next_local.llvm_value = compile_alloca(next_local.name);
@@ -423,10 +462,13 @@ namespace jit {
 	satom_t mask = (depth >= 1 ? (1 << (depth - 1)) : 0);
     
 	for (int i = 0; i < depth; ++i) {
-	  ENV_CHECK_VOID(this, !NOUN_EQUALS(noun, loop_body_placeholder), "Cannot refer to the loop body");
+	  ENV_CHECK_VOID(this, !NOUN_EQUALS(noun, loop_body_placeholder),
+			 "Cannot refer to the loop body");
 
 	  if (NOUN_EQUALS(noun, args_placeholder)) {
-	    noun = cell_new(machine->heap, args_placeholder, args_placeholder);
+	    heap_t *heap = machine->heap;
+	    CELLS(1);
+	    noun = CELL(args_placeholder, args_placeholder);
 
 	    if (NOUN_IS_UNDEFINED(args_root)) {
 	      args_root = noun;
@@ -441,13 +483,14 @@ namespace jit {
 	  mask = (mask >> 1);
 	}
   
-	ENV_CHECK_VOID(this, !NOUN_EQUALS(noun, loop_body_placeholder), "Cannot refer to the loop body");
+	ENV_CHECK_VOID(this, !NOUN_EQUALS(noun, loop_body_placeholder),
+		       "Cannot refer to the loop body");
 
 	if (NOUN_EQUALS(noun, args_placeholder)) {
-	  // This is an undeclared reference, so it must be an argument.
-	  // We are fetching an undeclared local variable value: i.e. an argument.
+	  // This is an undeclared reference, so it must be an
+	  // argument.  We are fetching an undeclared local variable
+	  // value: i.e. an argument.
 	  // Allocate an index and initialize the local variable.
-
 	  // Allocate a local variable slot for an argument:
 	  noun = satom_as_noun(allocate_local(_UNDEFINED));
 
@@ -472,16 +515,20 @@ namespace jit {
 	    ASSIGN(local_variable_index_map, n, ENV_OWNER);
 	}
 
-	ENV_CHECK_VOID(this, noun_get_type(noun) == satom_type, "Type mismatch");
-	ENV_CHECK_VOID(this, noun_as_satom(noun) <= JIT_INDEX_MAX, "Invalid index");
+	ENV_CHECK_VOID(this, noun_get_type(noun) == satom_type,
+		       "Type mismatch");
+	ENV_CHECK_VOID(this, noun_as_satom(noun) <= JIT_INDEX_MAX,
+		       "Invalid index");
       }
 
       jit_index_t get_index_of_address(jit_address_t address) {
 	ENV_CHECK(this, address >= 1, "Invalid address", 0);
 
 	noun_t noun = local_variable_index_map;
-	ENV_CHECK(this, !NOUN_EQUALS(noun, loop_body_placeholder), "Cannot refer to the loop body", 0);
-	ENV_CHECK(this, !NOUN_EQUALS(noun, args_placeholder), "Undefined value", 0);
+	ENV_CHECK(this, !NOUN_EQUALS(noun, loop_body_placeholder),
+		  "Cannot refer to the loop body", 0);
+	ENV_CHECK(this, !NOUN_EQUALS(noun, args_placeholder),
+		  "Undefined value", 0);
 	int depth = (sizeof(address) * 8 - __builtin_clz(address) - 1);
 
 	// Run through the bits from left to right:
@@ -489,8 +536,10 @@ namespace jit {
     
 	for (int i = 0; i < depth; ++i) {    
 	  noun = (mask & address) ? noun_get_right(noun) : noun_get_left(noun);
-	  ENV_CHECK(this, !NOUN_EQUALS(noun, loop_body_placeholder), "Cannot refer to the loop body", 0);
-	  ENV_CHECK(this, !NOUN_EQUALS(noun, args_placeholder), "Undefined value", 0);
+	  ENV_CHECK(this, !NOUN_EQUALS(noun, loop_body_placeholder),
+		    "Cannot refer to the loop body", 0);
+	  ENV_CHECK(this, !NOUN_EQUALS(noun, args_placeholder),
+		    "Undefined value", 0);
 	  mask = (mask >> 1);
 	}
 
@@ -535,7 +584,8 @@ namespace jit {
 	if (failed) return;
 
 	ENV_CHECK_VOID(this, index < next_locals.size(), "Invalid index");
-	ENV_CHECK_VOID(this, NOUN_IS_UNDEFINED(next_locals.at(index).value), "Overwritten value");
+	ENV_CHECK_VOID(this, NOUN_IS_UNDEFINED(next_locals.at(index).value),
+		       "Overwritten value");
 	ENV_CHECK_VOID(this, NOUN_IS_DEFINED(value), "Undefined value");
 
 	next_locals.at(index).set_value(value);
@@ -545,23 +595,29 @@ namespace jit {
 	if (failed) return;
 
 	ENV_CHECK_VOID(this, index < locals.size(), "Invalid index");
-	ENV_CHECK_VOID(this, NOUN_IS_UNDEFINED(locals.at(index).value), "Overwritten value");
+	ENV_CHECK_VOID(this, NOUN_IS_UNDEFINED(locals.at(index).value),
+		       "Overwritten value");
 	ENV_CHECK_VOID(this, NOUN_IS_DEFINED(value), "Undefined value");
 
 	locals.at(index).set_value(value);
       }
 
       void declare_loop() {
-	ASSIGN(local_variable_index_map, cell_new(machine->heap, loop_body_placeholder, local_variable_index_map), ENV_OWNER);
+	heap_t *heap = machine->heap;
+	CELLS(1);
+	ASSIGN(local_variable_index_map, CELL(loop_body_placeholder,
+	  local_variable_index_map), ENV_OWNER);
       }
 
       void initialize_args(noun_t args, noun_t args_root) {
 	if (noun_get_type(args) == cell_type) {
-	  ENV_CHECK_VOID(this, noun_get_type(args_root) == cell_type, "Argument type mismatch");
+	  ENV_CHECK_VOID(this, noun_get_type(args_root) == cell_type,
+			 "Argument type mismatch");
 	  initialize_args(noun_get_left(args), noun_get_left(args_root));
 	  initialize_args(noun_get_right(args), noun_get_right(args_root));
 	} else {
-	  ENV_CHECK_VOID(this, noun_get_type(args_root) == satom_type, "Type mismatch");
+	  ENV_CHECK_VOID(this, noun_get_type(args_root) == satom_type,
+			 "Type mismatch");
 	  satom_t index_satom = noun_as_satom(args_root);
 	  ENV_CHECK_VOID(this, index_satom <= JIT_INDEX_MAX, "Invalid index");
 	  initialize_local((jit_index_t)index_satom, args);
@@ -569,14 +625,18 @@ namespace jit {
       }
 
       noun_t eval(Node *oper, noun_t args) {
-	ENV_CHECK(this, NOUN_IS_UNDEFINED(args) == NOUN_IS_UNDEFINED(args_root), "Arguments mismatch", _UNDEFINED);
+	ENV_CHECK(this, NOUN_IS_UNDEFINED(args) == 
+		  NOUN_IS_UNDEFINED(args_root), "Arguments mismatch",
+		  _UNDEFINED);
 
 	initialize_args(args, args_root);
 
 #if ARKHAM_LLVM
 	compiled_fn_t fn = (compiled_fn_t)fp; //ZZZ
 	noun_t compiled_result = (fn)(args); // ZZZ: unshare?
-	printf(">>> "); noun_print(stdout, compiled_result, true); printf("\n");
+	printf(">>> ");
+	noun_print(stdout, compiled_result, true); 
+	printf("\n");
 #endif
     
 	oper->eval(this);
@@ -610,7 +670,8 @@ namespace jit {
 	iter_t iter = (iter_t){ .iter = function->arg_begin() };
 	compile_copy_args_to_locals(args_root, &iter);
 	// Set initial values for locals:
-	for(std::vector<LocalVariable>::iterator it = locals.begin(); it != locals.end(); ++it)
+	for(std::vector<LocalVariable>::iterator it = locals.begin();
+	    it != locals.end(); ++it)
 	  if (NOUN_IS_DEFINED(it->initial_value))
 	    builder->CreateStore(LLVM_NOUN(it->initial_value), it->llvm_value);
     
@@ -624,7 +685,8 @@ namespace jit {
 	function->dump();
     
 	// Validate the generated code, checking for consistency.
-	ENV_CHECK_VOID(this, !verifyFunction(*(function), /*ZZZ*/ AbortProcessAction), "Invalid function");
+	ENV_CHECK_VOID(this, !verifyFunction(*(function),
+	  /*ZZZ*/ AbortProcessAction), "Invalid function");
     
 	// Print the function.
 	function->dump();
@@ -650,20 +712,24 @@ namespace jit {
 	std::vector<Type*> params(1 /*ZZZ*/, llvm_noun_type());
     
 	// Create function type.
-	FunctionType *functionType = FunctionType::get(llvm_noun_type(), params, false);
+	FunctionType *functionType = FunctionType::get(llvm_noun_type(),
+						       params, false);
     
 	// Create function.
-	function = Function::Create(functionType, Function::PrivateLinkage, /* anonymous */ std::string(""), llvm->module);
+	function = Function::Create(functionType, Function::PrivateLinkage,
+	  /* anonymous */ std::string(""), llvm->module);
     
 	// Create basic block.
-	BasicBlock *block = BasicBlock::Create(getGlobalContext(), "entry", function);
+	BasicBlock *block = BasicBlock::Create(getGlobalContext(), "entry",
+					       function);
 	builder->SetInsertPoint(block);
 #endif /* ARKHAM_LLVM */
     
 	oper->prep(this);
     
 	for (int i = 0; i <= max_stack_index; ++i)
-	  stack.resize(i + 1, LocalVariable(make_var_name("stack", i), _UNDEFINED, STACK_OWNER));
+	  stack.resize(i + 1, LocalVariable(make_var_name("stack", i),
+	    _UNDEFINED, STACK_OWNER));
       }
 
       void copy_locals() {
@@ -703,15 +769,20 @@ namespace jit {
       }
 
       void add_incoming_to_else(Value *value, BasicBlock *block) {
-	incoming_to_else.push_back((incoming_t){ .value = value, .block = block });
+	incoming_to_else.push_back((incoming_t){
+	  .value = value,
+	  .block = block 
+	});
       }
 
-      PHINode *begin(Environment *env, Type *type, std::vector<incoming_t> &incoming) {
+      PHINode *begin(Environment *env, Type *type,
+		     std::vector<incoming_t> &incoming) {
 	size_t size = incoming.size();
 	if (size > 0) {
 	  PHINode *phi = env->builder->CreatePHI(type, size);
 	  int i = 0;
-	  for(std::vector<incoming_t>::iterator it = incoming.begin(); it != incoming.end(); ++it) {
+	  for(std::vector<incoming_t>::iterator it = incoming.begin();
+	      it != incoming.end(); ++it) {
 	    printf("phi->addIncoming: i=%d\n", i);
 	    it->value->dump();
 	    phi->addIncoming(it->value, it->block);
@@ -727,7 +798,10 @@ namespace jit {
       }
 
       void add_incoming_to_merge(Value *value, BasicBlock *block) {
-	incoming_to_merge.push_back((incoming_t){ .value = value, .block = block });
+	incoming_to_merge.push_back((incoming_t){
+          .value = value,
+          .block = block
+	});
       }
 
       PHINode *begin_merge(Environment *env, Type *type) {
@@ -741,30 +815,39 @@ namespace jit {
       jit_index_t stack_index;
 
 #if ARKHAM_LLVM
-      typedef Value * (*if_atoms_fn_t)(Environment *env, Value *left, Value *right, IfThenElseBlocks *blocks, bool *add_default_branch);
+      typedef Value * (*if_atoms_fn_t)(Environment *env, Value *left,
+        Value *right, IfThenElseBlocks *blocks, bool *add_default_branch);
 #endif
 
 #if ARKHAM_LLVM
-      static Value *if_else(Environment *env, const char *prefix, Type *type, Value *left, Value *right, Value *test, if_atoms_fn_t if_atoms_fn, if_atoms_fn_t if_not_atoms_fn, IfThenElseBlocks *parent_blocks) {
+      static Value *if_else(Environment *env, const char *prefix, Type *type,
+			    Value *left, Value *right, Value *test,
+			    if_atoms_fn_t if_atoms_fn,
+			    if_atoms_fn_t if_not_atoms_fn,
+			    IfThenElseBlocks *parent_blocks) {
 	IfThenElseBlocks blocks(parent_blocks);
 	bool add_default_branch;
 	char buffer[strlen(prefix) + 7];
 
 	snprintf(buffer, sizeof(buffer), "%s.if", prefix);
-	blocks.if_block = BasicBlock::Create(getGlobalContext(), buffer, env->function);
+	blocks.if_block = BasicBlock::Create(getGlobalContext(), buffer,
+					     env->function);
 	snprintf(buffer, sizeof(buffer), "%s.else", prefix);
 	blocks.else_block = BasicBlock::Create(getGlobalContext(), buffer);
 	snprintf(buffer, sizeof(buffer), "%s.merge", prefix);
 	blocks.merge_block = BasicBlock::Create(getGlobalContext(), buffer);
 
-	blocks.add_incoming_to_else(UndefValue::get(llvm_noun_type()), env->builder->GetInsertBlock());
+	blocks.add_incoming_to_else(UndefValue::get(llvm_noun_type()),
+				    env->builder->GetInsertBlock());
 	env->builder->CreateCondBr(test, blocks.if_block, blocks.else_block);
 
 	// Emit 'then' value.
 	env->builder->SetInsertPoint(blocks.if_block);
 	add_default_branch = true;
-	Value *if_value = if_atoms_fn(env, left, right, &blocks, &add_default_branch);
-	// Codegen of 'then' can change the current block, update if_block for the PHI.
+	Value *if_value = if_atoms_fn(env, left, right, &blocks,
+				      &add_default_branch);
+	// Codegen of 'then' can change the current block, update
+	// if_block for the PHI.
 	blocks.if_block = env->builder->GetInsertBlock();
 	if (add_default_branch) {
 	  blocks.add_incoming_to_merge(if_value, blocks.if_block);
@@ -776,8 +859,10 @@ namespace jit {
 	env->builder->SetInsertPoint(blocks.else_block);
 	blocks.begin_else(env, llvm_noun_type());
 	add_default_branch = true;
-	Value *else_value = if_not_atoms_fn(env, left, right, &blocks, &add_default_branch);
-	// Codegen of 'else' can change the current block, update else_block for the PHI.
+	Value *else_value = if_not_atoms_fn(env, left, right, &blocks,
+					    &add_default_branch);
+	// Codegen of 'else' can change the current block, update
+	// else_block for the PHI.
 	blocks.else_block = env->builder->GetInsertBlock();
 	if (add_default_branch) {
 	  blocks.add_incoming_to_merge(else_value, blocks.else_block);
@@ -790,12 +875,18 @@ namespace jit {
 	return blocks.begin_merge(env, type);
       }
 
-      static Value *if_atoms(Environment *env, const char *prefix, Type *type, Value *left, Value *right, if_atoms_fn_t if_atoms_fn, if_atoms_fn_t if_not_atoms_fn) {
+      static Value *if_atoms(Environment *env, const char *prefix, Type *type,
+			     Value *left, Value *right,
+			     if_atoms_fn_t if_atoms_fn,
+			     if_atoms_fn_t if_not_atoms_fn) {
 	Value *both = env->builder->CreateOr(left, right);
-	Value *low_bit = env->builder->CreateAnd(both, LLVM_NOUN(RAW_VALUE_AS_NOUN(NOUN_NOT_SATOM_FLAG)));
-	Value *test = env->builder->CreateICmpEQ(low_bit, LLVM_NOUN(RAW_VALUE_AS_NOUN(0)));
+	Value *low_bit = env->builder->CreateAnd(both,
+	  LLVM_NOUN(RAW_VALUE_AS_NOUN(NOUN_NOT_SATOM_FLAG)));
+	Value *test = env->builder->CreateICmpEQ(low_bit,
+          LLVM_NOUN(RAW_VALUE_AS_NOUN(0)));
 
-	return if_else(env, prefix, type, left, right, test, if_atoms_fn, if_not_atoms_fn, /* parent_blocks */ NULL);
+	return if_else(env, prefix, type, left, right, test, if_atoms_fn,
+          if_not_atoms_fn, /* parent_blocks */ NULL);
       }
 #endif
     };
@@ -807,49 +898,68 @@ namespace jit {
       noun_t local_variable_index_map;
 
     private:
-      jit_address_t get_root_address(noun_t env_local_variable_index_map, jit_address_t address) {
-	if (NOUN_EQUALS(local_variable_index_map, env_local_variable_index_map)) {
+      jit_address_t get_root_address(noun_t env_local_variable_index_map,
+				     jit_address_t address) {
+	if (NOUN_EQUALS(local_variable_index_map,
+			env_local_variable_index_map)) {
 	  return address;
 	} else if (noun_get_type(env_local_variable_index_map) == cell_type) {
-	  jit_address_t left_address = get_root_address(noun_get_left(env_local_variable_index_map), address * 2);
+	  jit_address_t left_address = get_root_address(noun_get_left(
+            env_local_variable_index_map), address * 2);
 	  if (left_address != JIT_ADDRESS_UNDEFINED)
 	    return left_address;
 	  else
-	    return get_root_address(noun_get_right(env_local_variable_index_map), address * 2 + 1);
+	    return get_root_address(noun_get_right(
+              env_local_variable_index_map), address * 2 + 1);
 	} else
 	  return JIT_ADDRESS_UNDEFINED;
       }
 
-      void dump_impl(Environment *env, FILE *fp, int indent, noun_t local_variable_initial_values, jit_address_t address) {
+      void dump_impl(Environment *env, FILE *fp, int indent,
+		     noun_t local_variable_initial_values,
+		     jit_address_t address) {
 	if (noun_get_type(local_variable_initial_values) == cell_type) {
-	  dump_impl(env, fp, indent, noun_get_left(local_variable_initial_values), address * 2);
-	  dump_impl(env, fp, indent, noun_get_right(local_variable_initial_values), address * 2 + 1);
+	  dump_impl(env, fp, indent, noun_get_left(
+            local_variable_initial_values), address * 2);
+	  dump_impl(env, fp, indent, noun_get_right(
+            local_variable_initial_values), address * 2 + 1);
 	} else {
 	  // Allocate a local variable slot for a declared variable:
 	  env->indent(fp, indent + 1);
-	  fprintf(fp, "store(@%" JIT_ADDRESS_FMT ", %" SATOM_FMT ")\n", address, noun_as_satom(local_variable_initial_values));
+	  fprintf(fp, "store(@%" JIT_ADDRESS_FMT ", %" SATOM_FMT ")\n",
+		  address, noun_as_satom(local_variable_initial_values));
 	}
       }
 
-      noun_t prep_impl(Environment *env, noun_t local_variable_initial_values) {
+      noun_t prep_impl(Environment *env,
+		       noun_t local_variable_initial_values) {
 	if (noun_get_type(local_variable_initial_values) == cell_type) {
-	  noun_t left = prep_impl(env, noun_get_left(local_variable_initial_values));
-	  noun_t right = prep_impl(env, noun_get_right(local_variable_initial_values));
-	  return cell_new(machine->heap, left, right);
+	  noun_t left = prep_impl(env, noun_get_left(
+            local_variable_initial_values));
+	  noun_t right = prep_impl(env, noun_get_right(
+            local_variable_initial_values));
+	  heap_t *heap = machine->heap;
+	  CELLS(1);
+	  return CELL(left, right);
 	} else {
 	  // Allocate a local variable slot for a declared variable:
-	  return satom_as_noun(env->allocate_local(local_variable_initial_values));
+	  return satom_as_noun(env->allocate_local(
+            local_variable_initial_values));
 	}
       }
 
-      void eval_impl(Environment *env, noun_t local_variable_initial_values, noun_t local_variable_index_map) {
+      void eval_impl(Environment *env, noun_t local_variable_initial_values,
+		     noun_t local_variable_index_map) {
 	if (noun_get_type(local_variable_initial_values) == cell_type) {
-	  eval_impl(env, noun_get_left(local_variable_initial_values), noun_get_left(local_variable_index_map));
-	  eval_impl(env, noun_get_right(local_variable_initial_values), noun_get_right(local_variable_index_map));
+	  eval_impl(env, noun_get_left(local_variable_initial_values),
+            noun_get_left(local_variable_index_map));
+	  eval_impl(env, noun_get_right(local_variable_initial_values),
+            noun_get_right(local_variable_index_map));
 	} else {
 	  satom_t index = noun_as_satom(local_variable_index_map);
 	  ENV_CHECK_VOID(env, index <= JIT_INDEX_MAX, "Invalid index");
-	  env->initialize_local((jit_index_t)index, local_variable_initial_values);
+	  env->initialize_local((jit_index_t)index,
+				local_variable_initial_values);
 	}
       }
 
@@ -869,7 +979,10 @@ namespace jit {
 
       void dump(Environment *env, FILE *fp, int indent) {
 	if (env->failed) return;
-	env->indent(fp, indent); fprintf(fp, "declare(\n"); dump_impl(env, fp, indent, local_variable_initial_values, get_root_address(env->local_variable_index_map, 1));
+	env->indent(fp, indent); 
+	fprintf(fp, "declare(\n"); 
+	dump_impl(env, fp, indent, local_variable_initial_values,
+		  get_root_address(env->local_variable_index_map, 1));
 	inner->dump(env, fp, indent + 1);
 	env->indent(fp, indent); fprintf(fp, ")\n");
       }
@@ -877,11 +990,16 @@ namespace jit {
       void prep(Environment *env) {
 	if (env->failed) return;
 
-	local_variable_index_map = prep_impl(env, local_variable_initial_values);
+	local_variable_index_map = prep_impl(env,
+          local_variable_initial_values);
 	SHARE(local_variable_index_map, AST_OWNER);
 
-	noun_t new_local_variable_index_map = cell_new(machine->heap, local_variable_index_map, env->local_variable_index_map);
-	ASSIGN(env->local_variable_index_map, new_local_variable_index_map, ENV_OWNER);
+	heap_t *heap = machine->heap;
+	CELLS(1);
+	noun_t new_local_variable_index_map = CELL(local_variable_index_map,
+	  env->local_variable_index_map);
+	ASSIGN(env->local_variable_index_map, new_local_variable_index_map,
+	       ENV_OWNER);
 
 	inner->prep(env);
       }
@@ -895,7 +1013,8 @@ namespace jit {
 
       void eval(Environment *env) {
 	if (env->failed) return;
-	eval_impl(env, local_variable_initial_values, local_variable_index_map);
+	eval_impl(env, local_variable_initial_values,
+		  local_variable_index_map);
 	inner->eval(env);
       }
 
@@ -962,34 +1081,53 @@ namespace jit {
       }
 
 #if ARKHAM_LLVM
-      static Value *eq_if_atoms(Environment *env, Value *left, Value *right, IfThenElseBlocks *blocks, bool *add_default_branch) {
+      static Value *eq_if_atoms(Environment *env, Value *left, Value *right,
+				IfThenElseBlocks *blocks,
+				bool *add_default_branch) {
 	return env->builder->CreateICmpEQ(left, right);
       }
 
-      static Value *eq_if_not_atoms(Environment *env, Value *left, Value *right, IfThenElseBlocks *blocks, bool *add_default_branch) {
-	return env->builder->CreateICmpEQ(env->builder->CreateCall2(machine->llvm->module->getFunction("atom_equals"), left, right), LLVM_NOUN(_YES));
+      static Value *eq_if_not_atoms(Environment *env, Value *left,
+				    Value *right, IfThenElseBlocks *blocks,
+				    bool *add_default_branch) {
+	return env->builder->CreateICmpEQ(env->builder->CreateCall2(
+          machine->llvm->module->getFunction("atom_equals"), left, right),
+          LLVM_NOUN(_YES));
       }
 
-      static Value *if_overflow(Environment *env, Value *sum, Value *unused, IfThenElseBlocks *blocks, bool *add_default_branch) {
-	blocks->parent->add_incoming_to_else(UndefValue::get(llvm_noun_type()), blocks->if_block);
+      static Value *if_overflow(Environment *env, Value *sum, Value *unused,
+				IfThenElseBlocks *blocks,
+				bool *add_default_branch) {
+	blocks->parent->add_incoming_to_else(UndefValue::get(llvm_noun_type()),
+					     blocks->if_block);
 	env->builder->CreateBr(blocks->parent->else_block);
 	*add_default_branch = false;
 	return sum;
       }
 
-      static Value *if_not_overflow(Environment *env, Value *sum, Value *unused, IfThenElseBlocks *blocks, bool *add_default_branch) {
+      static Value *if_not_overflow(Environment *env, Value *sum,
+				    Value *unused, IfThenElseBlocks *blocks,
+				    bool *add_default_branch) {
       	return sum;
       }
 
-      static Value *add_if_atoms(Environment *env, Value *left, Value *right, IfThenElseBlocks *blocks, bool *add_default_branch) {
-	Value *result = env->builder->CreateCall2(machine->llvm->uadd_with_overflow, left, right);
+      static Value *add_if_atoms(Environment *env, Value *left, Value *right,
+				 IfThenElseBlocks *blocks,
+				 bool *add_default_branch) {
+	Value *result = env->builder->CreateCall2(
+          machine->llvm->uadd_with_overflow, left, right);
 	Value *sum = env->builder->CreateExtractValue(result, 0);
 	Value *overflow = env->builder->CreateExtractValue(result, 1);
-	return if_else(env, "add.check.overflow", llvm_noun_type(), sum, NULL, overflow, if_overflow, if_not_overflow, /* parent_blocks */ blocks);
+	return if_else(env, "add.check.overflow", llvm_noun_type(), sum, NULL,
+		       overflow, if_overflow, if_not_overflow,
+		       /* parent_blocks */ blocks);
       }
 
-      static Value *add_if_not_atoms(Environment *env, Value *left, Value *right, IfThenElseBlocks *blocks, bool *add_default_branch) {
-	return env->builder->CreateCall2(machine->llvm->module->getFunction("atom_add"), left, right);
+      static Value *add_if_not_atoms(Environment *env, Value *left,
+				     Value *right, IfThenElseBlocks *blocks,
+				     bool *add_default_branch) {
+	return env->builder->CreateCall2(machine->llvm->module->getFunction(
+          "atom_add"), left, right);
       }
 
       Value *compile(Environment *env) {
@@ -999,10 +1137,14 @@ namespace jit {
 	Value *right = this->right->compile(env);
     
 	switch (type) {
-	case binop_eq_type: 
-	  return if_atoms(env, "eq", Type::getInt1Ty(getGlobalContext()), left, right, eq_if_atoms, eq_if_not_atoms);
-	case binop_add_type:
-	  return if_atoms(env, "add", llvm_noun_type(), left, right, add_if_atoms, add_if_not_atoms);
+	case binop_eq_type: {
+	  return if_atoms(env, "eq", Type::getInt1Ty(getGlobalContext()), left,
+			  right, eq_if_atoms, eq_if_not_atoms);
+	}
+	case binop_add_type: {
+	  return if_atoms(env, "add", llvm_noun_type(), left, right,
+			  add_if_atoms, add_if_not_atoms);
+	}
 	}
     
 	return NULL;
@@ -1059,7 +1201,8 @@ namespace jit {
 
 	subexpr->eval(env);
     
-	env->set_stack(stack_index, atom_increment(env->get_stack(stack_index)));
+	env->set_stack(stack_index, atom_increment(
+	  env->get_stack(stack_index)));
       }
 
       void dump(Environment *env, FILE *fp, int indent) {
@@ -1078,19 +1221,26 @@ namespace jit {
       }
 
 #if ARKHAM_LLVM
-      static Value *inc_if_atoms(Environment *env, Value *subexpr, Value *unused, IfThenElseBlocks *blocks, bool *add_default_branch) {
+      static Value *inc_if_atoms(Environment *env, Value *subexpr,
+				 Value *unused, IfThenElseBlocks *blocks,
+				 bool *add_default_branch) {
 	return env->builder->CreateAdd(subexpr, LLVM_NOUN(_1));
       }
   
-      static Value *inc_if_not_atoms(Environment *env, Value *subexpr, Value *unused, IfThenElseBlocks *blocks, bool *add_default_branch) {
-	return env->builder->CreateCall(machine->llvm->module->getFunction("atom_increment"), subexpr);
+      static Value *inc_if_not_atoms(Environment *env, Value *subexpr,
+				     Value *unused, IfThenElseBlocks *blocks,
+				     bool *add_default_branch) {
+	return env->builder->CreateCall(machine->llvm->module->getFunction(
+          "atom_increment"), subexpr);
       }
 
       Value *compile(Environment *env) {
 	Value *subexpr_value = subexpr->compile(env);
-	Value *test = env->builder->CreateICmpULT(subexpr_value, LLVM_NOUN(satom_as_noun(SATOM_MAX)));
+	Value *test = env->builder->CreateICmpULT(subexpr_value,
+          LLVM_NOUN(satom_as_noun(SATOM_MAX)));
     
-	return if_else(env, "inc", llvm_noun_type(), subexpr_value, NULL, test, inc_if_atoms, inc_if_not_atoms, /* parent_blocks */ NULL);
+	return if_else(env, "inc", llvm_noun_type(), subexpr_value, NULL, test,
+	  inc_if_atoms, inc_if_not_atoms, /* parent_blocks */ NULL);
       }
 #endif /* ARKHAM_LLVM */
 
@@ -1113,7 +1263,8 @@ namespace jit {
       void dump(Environment *env, FILE *fp, int indent) {
 	if (env->failed) return;
     
-	env->indent(fp, indent); fprintf(fp, "load(@%" JIT_ADDRESS_FMT ")", address);
+	env->indent(fp, indent); fprintf(fp, "load(@%" JIT_ADDRESS_FMT ")",
+	  address);
       }
 
       void prep(Environment *env) {
@@ -1129,12 +1280,14 @@ namespace jit {
       void eval(Environment *env) {
 	if (env->failed) return;
 
-	env->set_stack(stack_index, env->get_local(env->get_index_of_address(address)));
+	env->set_stack(stack_index, env->get_local(env->get_index_of_address(
+          address)));
       }
 
 #if ARKHAM_LLVM
       Value *compile(Environment *env) {
-	return env->builder->CreateLoad(env->locals.at(env->get_index_of_address(address)).llvm_value);
+	return env->builder->CreateLoad(env->locals.at(
+          env->get_index_of_address(address)).llvm_value);
       }
 #endif /* ARKHAM_LLVM */
     }; // class Load
@@ -1177,21 +1330,26 @@ namespace jit {
 
 	subexpr->eval(env);
 
-	env->set_local(env->get_index_of_address(address), env->get_stack(stack_index));
+	env->set_local(env->get_index_of_address(address), env->get_stack(
+          stack_index));
 	env->set_stack(stack_index, _UNDEFINED);
       }
 
 #if ARKHAM_LLVM
       Value *compile(Environment *env) {
-	return env->builder->CreateStore(subexpr->compile(env), env->next_locals.at(env->get_index_of_address(address)).llvm_value);
+	return env->builder->CreateStore(subexpr->compile(env),
+	  env->next_locals.at(env->get_index_of_address(address)).llvm_value);
       }
 #endif /* ARKHAM_LLVM */
 
 #if ARKHAM_LLVM
       Value *compile_copy(Environment *env) {
-	const LocalVariable &local = env->locals.at(env->get_index_of_address(address));
-	const LocalVariable &next_local = env->next_locals.at(env->get_index_of_address(address));
-	return env->builder->CreateStore(env->builder->CreateLoad(next_local.llvm_value), local.llvm_value);
+	const LocalVariable &local = env->locals.at(
+          env->get_index_of_address(address));
+	const LocalVariable &next_local = env->next_locals.at(
+          env->get_index_of_address(address));
+	return env->builder->CreateStore(env->builder->CreateLoad(
+          next_local.llvm_value), local.llvm_value);
       }
 #endif /* ARKHAM_LLVM */
 
@@ -1215,7 +1373,8 @@ namespace jit {
 	if (result != NULL)
 	  delete result;
   
-	for(std::vector<Store *>::iterator it = stores.begin(); it != stores.end(); ++it)
+	for(std::vector<Store *>::iterator it = stores.begin();
+	    it != stores.end(); ++it)
 	  delete *it;
       }
 
@@ -1229,7 +1388,8 @@ namespace jit {
 	env->indent(fp, indent + 1); fprintf(fp, "do(\n");
 	env->indent(fp, indent + 2); 
 
-	for(std::vector<Store *>::iterator it = stores.begin(); it != stores.end(); ++it) {
+	for(std::vector<Store *>::iterator it = stores.begin();
+	    it != stores.end(); ++it) {
 	  if (it != stores.begin())
 	    fprintf(fp, ", ");
 	  (*it)->dump(env, fp, -1);
@@ -1237,7 +1397,8 @@ namespace jit {
 
 	fprintf(fp, "\n"); env->indent(fp, indent + 1); fprintf(fp, ")\n");
 	env->indent(fp, indent + 1); fprintf(fp, "done(\n");
-	env->indent(fp, indent + 2); result->dump(env, fp, -1);	fprintf(fp, "\n");
+	env->indent(fp, indent + 2); result->dump(env, fp, -1); 
+	fprintf(fp, "\n");
 	env->indent(fp, indent + 1); fprintf(fp, ")\n");
 	env->indent(fp, indent); fprintf(fp, ")\n");
       }
@@ -1255,7 +1416,8 @@ namespace jit {
 
 	--env->current_stack_index;
 
-	for(std::vector<Store *>::iterator it = stores.begin(); it != stores.end(); ++it)
+	for(std::vector<Store *>::iterator it = stores.begin();
+	    it != stores.end(); ++it)
 	  (*it)->prep(env);
       }
 
@@ -1273,7 +1435,8 @@ namespace jit {
 	    result->eval(env);
 	    return;
 	  } else {
-	    for(std::vector<Store *>::iterator it = stores.begin(); it != stores.end(); ++it)
+	    for(std::vector<Store *>::iterator it = stores.begin();
+		it != stores.end(); ++it)
 	      (*it)->eval(env);
 	    // Copy the locals for the next iteration:
 	    env->copy_locals();
@@ -1296,9 +1459,13 @@ namespace jit {
       Value *compile(Environment *env) {
 	BasicBlock *incoming_block = env->builder->GetInsertBlock();
 
-	BasicBlock *test_block = BasicBlock::Create(getGlobalContext(), "loop.test", env->function);
-	BasicBlock *next_block = BasicBlock::Create(getGlobalContext(), "loop.next");
-	BasicBlock *done_block = BasicBlock::Create(getGlobalContext(), "loop.done");
+	BasicBlock *test_block = BasicBlock::Create(getGlobalContext(),
+						    "loop.test",
+						    env->function);
+	BasicBlock *next_block = BasicBlock::Create(getGlobalContext(),
+						    "loop.next");
+	BasicBlock *done_block = BasicBlock::Create(getGlobalContext(),
+						    "loop.done");
 
 	// Insert an explicit fall through from the current block to the loop.
 	env->builder->CreateBr(test_block);
@@ -1309,18 +1476,21 @@ namespace jit {
 	PHINode *test_phi = env->builder->CreatePHI(loop_type, 2);
 	test_phi->addIncoming(LLVM_NOUN(_0), incoming_block);
 	Value *test_value = test->compile(env);
-	test_value = env->builder->CreateICmpEQ(test_value, ConstantInt::get(getGlobalContext(), APInt(1, 0)));
+	test_value = env->builder->CreateICmpEQ(test_value,
+	  ConstantInt::get(getGlobalContext(), APInt(1, 0)));
 	env->builder->CreateCondBr(test_value, next_block, done_block);
 
 	// Next block.
 	env->function->getBasicBlockList().push_back(next_block);
 	env->builder->SetInsertPoint(next_block);
 	{
-	  for(std::vector<Store *>::iterator it = stores.begin(); it != stores.end(); ++it)
+	  for(std::vector<Store *>::iterator it = stores.begin();
+	      it != stores.end(); ++it)
 	    (*it)->compile(env);
 	}
 	{
-	  for(std::vector<Store *>::iterator it = stores.begin(); it != stores.end(); ++it)
+	  for(std::vector<Store *>::iterator it = stores.begin();
+	      it != stores.end(); ++it)
 	    (*it)->compile_copy(env);
 	}
 	env->builder->CreateBr(test_block);
@@ -1357,7 +1527,7 @@ namespace jit {
 using namespace jit::ast;
 
 Node *dec_ast(Environment *env) {
-  struct heap *heap = machine->heap;
+  heap_t *heap = machine->heap;
 
   Declaration *decl_counter = new Declaration(_0); {
     Loop *loop = new Loop();
@@ -1398,7 +1568,8 @@ Node *dec_ast(Environment *env) {
 }
 
 Node *fib_ast(Environment *env) {
-  struct heap *heap = machine->heap;
+  heap_t *heap = machine->heap;
+  CELLS(1);
 
   Declaration *decl_f0_f1 = new Declaration(CELL(_0, _1)); {
     Declaration *decl_counter = new Declaration(_0);
@@ -1471,7 +1642,11 @@ void test_jit(noun_t args) { //ZZZ
   if (env->failed) 
     ERROR0("Evaluation failed\n");
   else {
-    printf("%s(", (do_fib ? "fib" : "dec")); noun_print(stdout, args, true); printf(")="); noun_print(stdout, result, true); printf("\n");
+    printf("%s(", (do_fib ? "fib" : "dec")); 
+    noun_print(stdout, args, true); 
+    printf(")=");
+    noun_print(stdout, result, true);
+    printf("\n");
     UNSHARE(result, ENV_OWNER);
   }
 

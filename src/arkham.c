@@ -37,6 +37,40 @@ noun_nop(noun_t noun) {
 #define UNSHARE_CHILD(noun, o) noun_unshare(noun, heap, false)
 #endif /* #if ARKHAM_URC */
 
+enum op_t { 
+  /* real (visible) operators */
+  slash_op,
+  cell_op,
+  inc_op,
+  equals_op,
+  nock_op,
+  /* fictitious (invisible) operators */
+  cond_op,
+  crash_op,
+  ret_op
+};
+
+typedef struct { noun_t root; enum op_t op; } fn_ret_t;
+
+typedef fn_ret_t (*fn_t)(struct machine *machine, struct frame *frame,
+    noun_t root);
+
+typedef struct frame { fn_t fn; noun_t data; } frame_t;
+
+typedef struct fstack { 
+  size_t capacity; 
+  size_t size; 
+#if ARKHAM_STATS
+  size_t max_size;
+#endif
+  frame_t frames[0];
+} fstack_t;
+
+typedef struct {
+  const char *name;
+  FILE *file;
+} infile_t;
+
 void
 arkham_log(const char *format, ...) {
   va_list args;
@@ -46,14 +80,19 @@ arkham_log(const char *format, ...) {
 }
 
 void
-arkham_fail(const char *predicate, const char *file, const char *function, int line_number, const char *format, ...) {
-  fprintf(stderr, ERROR_PREFIX " Failed predicate: predicate = '%s', file = '%s', function = '%s', line = %d\n", predicate, file, function, line_number);
+arkham_fail(const char *predicate, const char *file, const char *function,
+    int line_number, const char *format, ...) {
+  fprintf(stderr, ERROR_PREFIX " Failed predicate: predicate = '%s', "
+	  "file = '%s', function = '%s', line = %d\n", predicate, file,
+	  function, line_number);
+
   if (format != NULL) {
     va_list args;
     va_start(args, format);
     vfprintf(stderr, format, args);
     va_end(args);
   }
+
   abort();
 }
 
@@ -66,7 +105,11 @@ arkham_usage(const char *format, ...) {
     va_end(args);
   }
 
-  fprintf(stderr, "%s", "Usage: arkham [options] [<file1> <file2> ...]\n\n  --enable-tracing\n        turn tracing on\n  --disable-tracing\n        turn tracing off\n  --help\n        prints this usage text\n  <file1> <file2> ...\n        files to interpret (use \"-\" for standard input)\n");
+  fprintf(stderr, "%s", "Usage: arkham [options] [<file1> <file2> ...]\n\n  "
+	  "--enable-tracing\n        turn tracing on\n  --disable-tracing\n "
+	  "       turn tracing off\n  --help\n        prints this usage "
+	  "text\n  <file1> <file2> ...\n        files to interpret "
+	  "(use \"-\" for standard input)\n");
   exit(1);
 }
 
@@ -110,14 +153,10 @@ void vec_expand(vec_t *vec) {
     vec->elems = (char *)calloc(vec->elem_capacity, vec->elem_size);    
   } else {
     vec->elem_capacity *= 2;
-    vec->elems = (char *)realloc(vec->elems, vec->elem_capacity * vec->elem_size);
+    vec->elems = (char *)realloc(vec->elems, vec->elem_capacity *
+				 vec->elem_size);
   }
 }
-
-typedef struct {
-  const char *name;
-  FILE *file;
-} infile_t;
 
 static void noun_print_decl(FILE *file, noun_t noun);
 
@@ -146,15 +185,18 @@ noun_header_dec_refs(noun_header_t *noun_header) {
 #define OWNERS_SIZE 16
 
 static void
-noun_header_print_header(FILE *file, const char *prefix, noun_header_t *noun_header, const char *suffix) {
+noun_header_print_header(FILE *file, const char *prefix,
+    noun_header_t *noun_header, const char *suffix) {
   if (noun_header_get_refs(noun_header) == ALLOC_FREE_MARKER)
     fprintf(file, "%s{%lu,###}%s", prefix, noun_header->id, suffix);
   else
-    fprintf(file, "%s{%lu,%" SATOM_FMT "}%s", prefix, noun_header->id, noun_header_get_refs(noun_header), suffix);
+    fprintf(file, "%s{%lu,%" SATOM_FMT "}%s", prefix, noun_header->id, 
+	    noun_header_get_refs(noun_header), suffix);
 }
 
 static void
-noun_header_print_owners(FILE *file, const char *prefix, noun_header_t *noun_header, const char *suffix) {
+noun_header_print_owners(FILE *file, const char *prefix,
+    noun_header_t *noun_header, const char *suffix) {
   const char *p = "";
 
   fprintf(file, "%s", prefix);
@@ -210,51 +252,6 @@ noun_type_to_string(enum noun_type noun_type)
   }
 }
 
-typedef struct heap {
-#if ARKHAM_STATS
-  unsigned long cell_alloc;
-  unsigned long cell_free_list_alloc;
-  unsigned long cell_free;
-  unsigned long cell_free_list_free;
-  unsigned long cell_max;
-  unsigned long cell_shared;
-  unsigned long cell_max_shared;
-  unsigned long cell_to_shared;
-  unsigned long cell_to_unshared;
-  unsigned long cell_overflow_to_shared;
-  unsigned long cell_stably_shared;
-  unsigned long batom_alloc;
-  unsigned long batom_free;
-  unsigned long batom_max;
-  unsigned long batom_shared;
-  unsigned long batom_max_shared;
-  unsigned long batom_to_shared;
-  unsigned long batom_to_unshared;
-#endif
-#if ARKHAM_URC
-  char *nursery_start;
-  char *nursery_current;
-  char *nursery_end;
-#endif /* ARKHAM_URC */
-#if ALLOC_DEBUG
-  // A linked list of all allocated cells:
-  unsigned long current_id;
-  noun_header_t *first;
-  noun_header_t *last;
-#endif
-#if CELL_FREE_LIST
-  // A circular buffer of freed cells:
-  unsigned int cell_free_list_start;
-  unsigned int cell_free_list_size;
-  cell_t *cell_free_list[CELL_FREE_LIST_SIZE];
-#endif
-#if SHARED_CELL_LIST
-  // TODO: Keep the pointers to cell_t* as well (for updating in place).
-  unsigned int shared_cell_list_size;
-  cell_t *shared_cell_list[SHARED_CELL_LIST_SIZE];
-#endif
-} heap_t;
-
 static void
 heap_print_stats(heap_t *heap, FILE *file) {
 #if ARKHAM_STATS
@@ -267,7 +264,8 @@ heap_print_stats(heap_t *heap, FILE *file) {
   fprintf(file, "cell_max_shared=%lu\n", heap->cell_max_shared);
   fprintf(file, "cell_to_shared=%lu\n", heap->cell_to_shared);
   fprintf(file, "cell_to_unshared=%lu\n", heap->cell_to_unshared);
-  fprintf(file, "cell_overflow_to_shared=%lu\n", heap->cell_overflow_to_shared);
+  fprintf(file, "cell_overflow_to_shared=%lu\n",
+	  heap->cell_overflow_to_shared);
   fprintf(file, "cell_stably_shared=%lu\n", heap->cell_stably_shared);
   fprintf(file, "batom_alloc=%lu\n", heap->batom_alloc);
   fprintf(file, "batom_free=%lu\n", heap->batom_free);
@@ -276,9 +274,16 @@ heap_print_stats(heap_t *heap, FILE *file) {
   fprintf(file, "batom_max_shared=%lu\n", heap->batom_max_shared);
   fprintf(file, "batom_to_shared=%lu\n", heap->batom_to_shared);
   fprintf(file, "batom_to_unshared=%lu\n", heap->batom_to_unshared);
+#if ARKHAM_URC
+  fprintf(file, "nursery used=%lu\n", (heap->nursery_current -
+    heap->nursery_start));
+  fprintf(file, "nursery size=%lu\n", (heap->nursery_end -
+    heap->nursery_start));
+#endif /* ARKHAM_URC */
 #endif
 #if ALLOC_DEBUG
-  for (noun_header_t *noun_header = heap->first; noun_header != NULL; noun_header = noun_header->next) {
+  for (noun_header_t *noun_header = heap->first; noun_header != NULL; 
+       noun_header = noun_header->next) {
     if (noun_header_get_refs(noun_header) != ALLOC_FREE_MARKER) {
       noun_header_print_header(file, "not freed: ", noun_header, "\n");
       noun_header_print_owners(file, "   owners: ", noun_header, "\n");
@@ -288,6 +293,7 @@ heap_print_stats(heap_t *heap, FILE *file) {
 }
 
 #if ARKHAM_URC
+//ZZZ: make smaller to test
 #define NURSERY_SIZE (512 * 1024 * 1024)
 #endif
 
@@ -295,8 +301,10 @@ static heap_t *
 heap_new() {
   heap_t *heap;
 #if ARKHAM_URC
-  void *mapped = mmap(NULL, NURSERY_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
-  FAIL(mapped != MAP_FAILED, "Memory map failed: size = %lu, errno = %d, error = %s\n", (size_t)NURSERY_SIZE, errno, strerror(errno));
+  void *mapped = mmap(NULL, NURSERY_SIZE, PROT_READ | PROT_WRITE,
+    MAP_ANON | MAP_PRIVATE, -1, 0);
+  FAIL(mapped != MAP_FAILED, "Memory map failed: size = %lu, errno = %d, "
+    "error = %s\n", (size_t)NURSERY_SIZE, errno, strerror(errno));
   heap = (heap_t *)mapped;
 #else /* #if !ARKHAM_URC */
   heap = (heap_t *)calloc(1, sizeof(heap_t));
@@ -316,7 +324,8 @@ heap_free_free_list(heap_t *heap) {
 #if CELL_FREE_LIST
   for (int i = 0; i < heap->cell_free_list_size; ++i) {
 #if !ALLOC_DEBUG
-    free(heap->cell_free_list[(heap->cell_free_list_start + i) % CELL_FREE_LIST_SIZE]);
+    free(heap->cell_free_list[(heap->cell_free_list_start + i) %
+      CELL_FREE_LIST_SIZE]);
 #endif
 #if ARKHAM_STATS
     ++heap->cell_free;
@@ -337,7 +346,8 @@ heap_free(heap_t *heap) {
 #if ALLOC_DEBUG
 static void
 heap_register_debug(heap_t *heap, noun_header_t *noun_header) {
-  noun_header->owners = (noun_header_t **)calloc(1, sizeof(noun_header_t *) * OWNERS_SIZE);
+  noun_header->owners = (noun_header_t **)calloc(1, sizeof(noun_header_t *) *
+    OWNERS_SIZE);
   noun_header->id = ++heap->current_id;
   if (heap->last != NULL)
     heap->last->next = noun_header;
@@ -347,9 +357,33 @@ heap_register_debug(heap_t *heap, noun_header_t *noun_header) {
 }
 #endif
 
+#if ARKHAM_URC
+void
+collect_garbage(size_t size) {
+  machine_t *machine = machine_get();
+  /* typedef struct frame { fn_t fn; noun_t data; } frame_t; */
+  /* struct fstack *stack; */
+  /* struct heap *heap; */
+  //ZZZ
+  ASSERT(false, "Unimplemented\n");
+}
+#endif /* #if ARKHAM_URC */
+
+#if ARKHAM_STATS
+void
+heap_alloc_cells_stats(heap_t *heap, int count) {
+  heap->cell_alloc += count;
+  int active_cell = heap->cell_alloc - heap->cell_free;
+  if (active_cell > heap->cell_max) {
+    heap->cell_max = active_cell;
+  }
+}
+#endif
+
 static URC_INLINE cell_t *
 heap_alloc_cell(heap_t *heap) {
   cell_t *cell;
+
 #if CELL_FREE_LIST
   if (heap->cell_free_list_size > 0) {
     cell = (cell_t *)heap->cell_free_list[heap->cell_free_list_start];
@@ -361,53 +395,45 @@ heap_alloc_cell(heap_t *heap) {
 #endif
   } else {
 #endif
-#if ARKHAM_URC
-    ASSERT0(heap->nursery_current + sizeof(cell_t) <= heap->nursery_end);
-    cell = (cell_t *)heap->nursery_current;
-    heap->nursery_current += sizeof(cell_t);
-#else /* #if !ARKHAM_URC */
-    cell = (cell_t *)calloc(1, sizeof(cell_t));
-#endif /* #if ARKHAM_URC */
-#if ARKHAM_STATS
-    ++heap->cell_alloc;
-    int active_cell = heap->cell_alloc - heap->cell_free;
-    if (active_cell > heap->cell_max) {
-      heap->cell_max = active_cell;
-    }
-#endif
+    cell = (cell_t *)heap_alloc_cells(heap, 1);
 #if CELL_FREE_LIST
   }
 #endif
-  noun_header_t *noun_header = &(cell->header);
+
 #if INLINE_REFS
-  noun_header->refs = 0;
+  (&(cell->header))->refs = 0;
 #endif
+
 #if ALLOC_DEBUG
   heap_register_debug(heap, &(cell->header));
 #endif
+
   return cell;
 }
 
 static URC_INLINE batom_t *
-heap_alloc_batom(heap_t *heap) {
+heap_alloc_batoms(heap_t *heap, int count) {
+  batom_t *batom = (batom_t *)heap_alloc(heap, count * sizeof(batom_t));
+
 #if ARKHAM_STATS
-  ++heap->batom_alloc;
+  heap->batom_alloc += count;
   int active_batom = heap->batom_alloc - heap->batom_free;
   if (active_batom > heap->batom_max) {
     heap->batom_max = active_batom;
   }
 #endif
-  batom_t *batom;
-#if ARKHAM_URC
-  ASSERT0(heap->nursery_current + sizeof(batom_t) <= heap->nursery_end);
-  batom = (batom_t *)heap->nursery_current;
-  heap->nursery_current += sizeof(batom_t);
-#else /* #if !ARKHAM_URC */
-  batom = (batom_t *)calloc(1, sizeof(batom_t));
-#endif /* #if ARKHAM_URC */
+
+  return batom;
+}
+
+static URC_INLINE batom_t *
+heap_alloc_batom(heap_t *heap) {
+  batom_t *batom = heap_alloc_batoms(heap, 1);
+
 #if ALLOC_DEBUG
   heap_register_debug(heap, noun_header);
 #endif
+
   return batom;
 }
 
@@ -417,7 +443,8 @@ heap_free_cell(heap_t *heap, cell_t *cell) {
   cell->header.refs = ALLOC_FREE_MARKER;
 #if CELL_FREE_LIST
   if (heap->cell_free_list_size < CELL_FREE_LIST_SIZE) {
-    heap->cell_free_list[(heap->cell_free_list_start + heap->cell_free_list_size) % CELL_FREE_LIST_SIZE] = cell;
+    heap->cell_free_list[(heap->cell_free_list_start +
+      heap->cell_free_list_size) % CELL_FREE_LIST_SIZE] = cell;
     ++heap->cell_free_list_size;
 #if ARKHAM_STATS
     ++heap->cell_free_list_free;
@@ -519,7 +546,8 @@ noun_share(noun_t noun, heap_t *heap) {
 	if (heap->shared_cell_list_size < SHARED_CELL_LIST_SIZE) {
 	  // Defer the expense of reference counting.
 	  // See "noun_unshare".
-	  heap->shared_cell_list[heap->shared_cell_list_size++] = (cell_t *)noun_header;
+	  heap->shared_cell_list[heap->shared_cell_list_size++] =
+	    (cell_t *)noun_header;
 	  // Return early (avoid the reference counting cost):
 	  return noun;
 	}
@@ -625,7 +653,7 @@ noun_t
 cell_set_left(noun_t noun, noun_t left, heap_t *heap) {
   ASSERT0(noun_get_type(noun) == cell_type);
   cell_t *cell = noun_as_cell(noun);
-  // XXX: if !logged then log
+  // ZZZ: if !logged then log
   SHARE(left, &(cell->header));
   UNSHARE(noun_get_left(noun), &(cell->header));
   cell->left = left;
@@ -636,16 +664,22 @@ noun_t
 cell_set_right(noun_t noun, noun_t right, heap_t *heap) {
   ASSERT0(noun_get_type(noun) == cell_type);
   cell_t *cell = noun_as_cell(noun);
-  // XXX: if !logged then log
+  // ZZZ: if !logged then log
   SHARE(right, &(cell->header));
   UNSHARE(noun_get_right(noun), &(cell->header));
   cell->right = right;
   return CELL_AS_NOUN(cell);
 }
 
+#if ARKHAM_URC
+noun_t URC_INLINE
+cell_new(cell_t **cellp, noun_t left, noun_t right) {
+  cell_t *cell = (*cellp)++;
+#else /* #if !ARKHAM_URC */
 noun_t URC_INLINE
 cell_new(heap_t *heap, noun_t left, noun_t right) {
   cell_t *cell = heap_alloc_cell(heap);
+#endif /* #if ARKHAM_URC */
   cell->left = left;
   cell->right = right;
   SHARE(left, &(cell->header));
@@ -725,7 +759,8 @@ atom_equals(noun_t a, noun_t b) {
   if (a_type == satom_type)
     return (NOUN_AS_SATOM(a) == NOUN_AS_SATOM(b)) ? _YES : _NO;
   else
-    return (mpz_cmp(NOUN_AS_BATOM(a)->val, NOUN_AS_BATOM(b)->val) == 0) ? _YES : _NO;
+    return (mpz_cmp(NOUN_AS_BATOM(a)->val, NOUN_AS_BATOM(b)->val) == 0) ? 
+      _YES : _NO;
 }
 
 noun_t
@@ -914,11 +949,6 @@ noun_print_decl(FILE *file, noun_t noun) {
   }
 }
 
-enum op_t { 
-  slash_op, cell_op, inc_op, equals_op, nock_op, /* real (visible) operators */
-  cond_op, crash_op, ret_op /* fictitious (invisible) operators */
-};
-
 static const char *op_to_string(enum op_t op) {
   const char *op_string;
   switch (op) {
@@ -932,21 +962,6 @@ static const char *op_to_string(enum op_t op) {
   ASSERT0(op_string != NULL);
   return op_string;
 }
-
-typedef struct { noun_t root; enum op_t op; } fn_ret_t;
-
-typedef fn_ret_t (*fn_t)(struct machine *machine, struct frame *frame, noun_t root);
-
-typedef struct frame { fn_t fn; noun_t data; } frame_t;
-
-typedef struct fstack { 
-  size_t capacity; 
-  size_t size; 
-#if ARKHAM_STATS
-  size_t max_size;
-#endif
-  frame_t frames[0];
-} fstack_t;
 
 void
 arkham_crash(machine_t *machine, const char *format, ...) {
@@ -966,7 +981,8 @@ stack_print_stats(fstack_t *stack, FILE *file) {
 
 static fstack_t *
 stack_new(int capacity) {
-  fstack_t *stack = (fstack_t *)calloc(1, sizeof(fstack_t) + capacity * sizeof(frame_t));
+  fstack_t *stack = (fstack_t *)calloc(1, sizeof(fstack_t) + 
+      capacity * sizeof(frame_t));
   stack->capacity = capacity;
   return stack;
 }
@@ -979,7 +995,8 @@ stack_free(fstack_t *stack) {
 static fstack_t *
 stack_resize(fstack_t *stack) {
   stack->capacity = stack->capacity * 2;
-  return (fstack_t *)realloc(stack, sizeof(fstack_t) + stack->capacity * sizeof(frame_t));
+  return (fstack_t *)realloc(stack, sizeof(fstack_t) +
+      stack->capacity * sizeof(frame_t));
 }
 
 static inline fstack_t *
@@ -1074,13 +1091,16 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
 	  exit(4); // TODO: recover instead of exit
 	}
 	if (vec_size(&stack) < 2) {
-	  fprintf(stderr, "Parse error: too few atoms (%d) in a cell at column %d\n", *(int *)vec_get_top(&count), column);
+	  fprintf(stderr, "Parse error: too few atoms (%d) in a cell "
+              "at column %d\n", *(int *)vec_get_top(&count), column);
 	  exit(4); // TODO: recover instead of exit
 	}
 	for (int i = 1; i < *(int*)vec_get_top(&count); ++i) {
 	  noun_t right = *(noun_t *)vec_pop(&stack);
 	  noun_t left = *(noun_t *)vec_pop(&stack);
-	  noun_t cell = cell_new(heap, left, right);
+	  CELLS(1);
+	  noun_t cell = CELL(left, right);
+	  END_CELLS();
 	  vec_push(&stack, &cell);
 	}
 	vec_pop(&count);
@@ -1099,11 +1119,13 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
 	}
 	continue;
       } else {
-	fprintf(stderr, "Parse error: unexpected character '%c' at column %d\n", c, column);
+	fprintf(stderr, "Parse error: unexpected character '%c' "
+            "at column %d\n", c, column);
 	exit(4); // TODO: recover instead of exit
       }
     } else {
-      if (c == '[' || c == ']' || c == '\n' || c == '\r' || c == ' ' || c == '\t') {
+      if (c == '[' || c == ']' || c == '\n' || c == '\r' || c == ' ' ||
+	  c == '\t') {
 	if (c == '\n') {
 	  ++row;
 	  column = 1;
@@ -1124,7 +1146,8 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
       } else if (c >= '0' && c <= '9') {
 	vec_push(&token, &c);
       } else {
-	fprintf(stderr, "Parse error: unexpected character '%c' at column %d\n", c, column);
+	fprintf(stderr, "Parse error: unexpected character '%c' "
+            "at column %d\n", c, column);
 	exit(4); // TODO: recover instead of exit
       }
     }
@@ -1151,8 +1174,14 @@ static void trace(machine_t *machine, enum op_t op, noun_t noun) {
 #define CITE(line) if (ARKHAM_TRACE && trace_flag) cite(file, line, "\n")
 #define CITE_INLINE(line) if (ARKHAM_TRACE && trace_flag) cite(file, line, "")
 #define CITE_END(p) if (ARKHAM_TRACE && trace_flag && (p)) fprintf(file, "\n")
-#define PR(noun) do { fprintf(file, "%s: ", #noun); noun_print(file, noun, true); fprintf(file, "\n"); } while (false)
-#define ASSIGN(l, r, o) do { noun_t old = l; l = SHARE(r, o) ; UNSHARE(old, o); } while (false)
+#define PR(noun) do { \
+    fprintf(file, "%s: ", #noun); \
+    noun_print(file, noun, true); \
+    fprintf(file, "\n"); \
+} while (false)
+#define ASSIGN(l, r, o) do { \
+    noun_t old = l; l = SHARE(r, o) ; UNSHARE(old, o); \
+} while (false)
 #define L(noun) noun_get_left(noun)
 #define R(noun) noun_get_right(noun)
 #define T(noun) noun_get_type(noun)
@@ -1173,33 +1202,58 @@ noun_t _9;
 noun_t _10;
 #endif
 
-static void dump(machine_t *machine, frame_t *frame, noun_t root, const char *function) {
+static void dump(machine_t *machine, frame_t *frame, noun_t root,
+    const char *function) {
   FILE *file = machine->file;
-  fprintf(file, "root: "); noun_print(file, root, true); fprintf(file, "\n");
-  fprintf(file, "data: "); noun_print(file, frame->data, true); fprintf(file, "\n");
+
+  fprintf(file, "root: ");
+  noun_print(file, root, true);
+  fprintf(file, "\n");
+
+  fprintf(file, "data: ");
+  noun_print(file, frame->data, true);
+  fprintf(file, "\n");
+
   ASSERT(false, "%s\n", function);
 }
 
-#define TF() if (ARKHAM_TRACE && machine->trace_flag) fprintf(machine->file, "function = %s\n", __FUNCTION__)
+#define TF() if (ARKHAM_TRACE && machine->trace_flag) \
+    fprintf(machine->file, "function = %s\n", __FUNCTION__)
 
 static fn_ret_t f13(machine_t *machine, frame_t *frame, noun_t root) {
   TF();
-  machine->stack = stack_pop(machine->stack, /* unshare */ false, machine->heap);
+  machine->stack = stack_pop(machine->stack, /* unshare */ false,
+      machine->heap);
   heap_t *heap = machine->heap;
-  return (fn_ret_t){ .root = SHARE(CELL(_2, root), ROOT_OWNER), .op = slash_op };
+  CELLS(1);
+  fn_ret_t result = (fn_ret_t){ 
+    .root = SHARE(CELL(_2, root), ROOT_OWNER), 
+    .op = slash_op
+  };
+  END_CELLS();
+  return result;
 }
 
 static fn_ret_t f14(machine_t *machine, frame_t *frame, noun_t root) {
   TF();
-  machine->stack = stack_pop(machine->stack, /* unshare */ false, machine->heap);
+  machine->stack = stack_pop(machine->stack, /* unshare */ false,
+      machine->heap);
   heap_t *heap = machine->heap;
-  return (fn_ret_t){ .root = SHARE(CELL(_3, root), ROOT_OWNER), .op = slash_op };
+  CELLS(1);
+  fn_ret_t result = (fn_ret_t){ 
+    .root = SHARE(CELL(_3, root), ROOT_OWNER),
+    .op = slash_op
+  };
+  END_CELLS();
+  return result;
 }
 
 static fn_ret_t f16p2(machine_t *machine, frame_t *frame, noun_t root) {
   TF();
   heap_t *heap = machine->heap;
+  CELLS(1);
   noun_t next_root = SHARE(CELL(frame->data, root), ROOT_OWNER);
+  END_CELLS();
   machine->stack = stack_pop(machine->stack, /* unshare */ true, heap);
   return (fn_ret_t){ .root = next_root, .op = ret_op };
 }
@@ -1216,7 +1270,9 @@ static fn_ret_t f16p1(machine_t *machine, frame_t *frame, noun_t root) {
 static fn_ret_t f20p2(machine_t *machine, frame_t *frame, noun_t root) {
   TF();
   heap_t *heap = machine->heap;
+  CELLS(1);
   noun_t next_root = SHARE(CELL(frame->data, root), ROOT_OWNER);
+  END_CELLS();
   machine->stack = stack_pop(machine->stack, /* unshare */ true, heap);
   return (fn_ret_t){ .root = next_root, .op = nock_op };
 }
@@ -1255,7 +1311,9 @@ static fn_ret_t f23(machine_t *machine, frame_t *frame, noun_t root) {
 static fn_ret_t f26(machine_t *machine, frame_t *frame, noun_t root) {
   TF();
   heap_t *heap = machine->heap;
+  CELLS(1);
   noun_t next_root = SHARE(CELL(root, frame->data), ROOT_OWNER);
+  END_CELLS();
   machine->stack = stack_pop(machine->stack, /* unshare */ true, heap);
   return (fn_ret_t){ .root = next_root, .op = nock_op };
 }
@@ -1263,7 +1321,10 @@ static fn_ret_t f26(machine_t *machine, frame_t *frame, noun_t root) {
 static fn_ret_t f27(machine_t *machine, frame_t *frame, noun_t root) {
   TF();
   heap_t *heap = machine->heap;
-  noun_t next_root = SHARE(CELL(CELL(root, L(frame->data)), R(R(R(frame->data)))), ROOT_OWNER);
+  CELLS(2);
+  noun_t next_root = SHARE(CELL(CELL(root, L(frame->data)),
+      R(R(R(frame->data)))), ROOT_OWNER);
+  END_CELLS();
   machine->stack = stack_pop(machine->stack, /* unshare */ true, heap);
   return (fn_ret_t){ .root = next_root, .op = nock_op };
 }
@@ -1273,15 +1334,19 @@ static fn_ret_t cond2(machine_t *machine, frame_t *frame, noun_t root) {
   noun_t data = frame->data;
   heap_t *heap = machine->heap;
   SHARE(data, COND2_OWNER);
-  machine->stack = stack_pop(machine->stack, /* unshare */ true, machine->heap);
+  machine->stack = stack_pop(machine->stack, /* unshare */ true,
+      machine->heap);
   if (T(root) != cell_type) {
     bool fits;
     satom_t satom = atom_get_satom(root, &fits);
     if (!fits || (satom != 0 && satom != 1))
       CRASH(machine);
-    heap_t *heap = machine->heap;
     noun_t r = R(data);
-    noun_t next_root = SHARE(CELL(L(data), (satom == 0 ? L(r) : R(r))), ROOT_OWNER);
+    heap_t *heap = machine->heap;
+    CELLS(1);
+    noun_t next_root = SHARE(CELL(L(data), (satom == 0 ? L(r) : R(r))),
+        ROOT_OWNER);
+    END_CELLS();
     UNSHARE(data, COND2_OWNER);
     noun_t discard = (satom == 0 ? R(r) : L(r));
     return (fn_ret_t){ .root = next_root, .op = nock_op };
@@ -1305,10 +1370,18 @@ static fn_ret_t cond1(machine_t *machine, noun_t root) {
   noun_t next_root;
   bool implement_directly = true;
   if (implement_directly) {
+    CELLS(3);
     next_root = SHARE(CELL(a, b), ROOT_OWNER);
-    stack_push(machine->stack, FRAME(cond2, CELL(a, CELL(c, d))), /* share */ true, heap);
+    stack_push(machine->stack, FRAME(cond2, CELL(a, CELL(c, d))),
+	       /* share */ true, heap);
+    END_CELLS();
   } else {
-    next_root = SHARE(CELL(a, CELL(_2, CELL(CELL(_0, _1), CELL(_2, CELL(CELL(_1, CELL(c, d)), CELL(CELL(_1, _0), CELL(_2, CELL(CELL(_1, CELL(_2, _3)), CELL(CELL(_1, _0), CELL(_4, CELL(_4, b))))))))))), ROOT_OWNER);
+    CELLS(18);
+    next_root = SHARE(CELL(a, CELL(_2, CELL(CELL(_0, _1), CELL(_2, CELL(
+        CELL(_1, CELL(c, d)), CELL(CELL(_1, _0), CELL(_2, CELL(
+	CELL(_1, CELL(_2, _3)), CELL(CELL(_1, _0), CELL(_4,
+        CELL(_4, b))))))))))), ROOT_OWNER);
+    END_CELLS();
   }
   return (fn_ret_t){ .root = next_root, .op = nock_op };
 }
@@ -1325,7 +1398,16 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op, noun_t root) {
   bool trace_flag = machine->trace_flag;
 
 #if ARKHAM_THREADED_INTERPRETER
-  void *op_labels[] = { &&slash_op, &&cell_op, &&inc_op, &&equals_op, &&nock_op, &&ret_op, &&crash_op, &&cond_op };
+  void *op_labels[] = { 
+    &&slash_op,
+    &&cell_op,
+    &&inc_op,
+    &&equals_op,
+    &&nock_op,
+    &&ret_op,
+    &&crash_op,
+    &&cond_op
+  };
 #define NEXT_OP(o) TRACE(); inc_ops(machine); goto *op_labels[o]
 #define LABEL(l) l
 #else /* #if !ARKHAM_THREADED_INTERPRETER */
@@ -1333,8 +1415,12 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op, noun_t root) {
 #define LABEL(l) case l
 #endif /* #if ARKHAM_THREADED_INTERPRETER */
 
-#define CALL0(o, noun, cf) machine->stack = stack_push(machine->stack, FRAME(cf, _UNDEFINED), /* share */ false, heap); ASSIGN(root, noun, ROOT_OWNER); NEXT_OP(o)
-#define CALL1(o, noun, cf, cd) machine->stack = stack_push(machine->stack, FRAME(cf, cd), /* share */ true, heap); ASSIGN(root, noun, ROOT_OWNER); NEXT_OP(o)
+#define CALL0(o, noun, cf) machine->stack = stack_push(machine->stack, \
+    FRAME(cf, _UNDEFINED), /* share */ false, heap); \
+    ASSIGN(root, noun, ROOT_OWNER); NEXT_OP(o)
+#define CALL1(o, noun, cf, cd) machine->stack = stack_push(machine->stack, \
+    FRAME(cf, cd), /* share */ true, heap); ASSIGN(root, noun, ROOT_OWNER); \
+    NEXT_OP(o)
 #define TAIL_CALL(o, noun) ASSIGN(root, noun, ROOT_OWNER); op = o; NEXT_OP(o)
 #define RET(noun) ASSIGN(root, noun, ROOT_OWNER); goto ret
 
@@ -1353,37 +1439,88 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op, noun_t root) {
 	if (T(r) == cell_type) {
 	  noun_t rl = L(r);
 	  if (T(rl) == cell_type) {
-	    CITE(16); noun_t l = L(root); noun_t nxt1 = CELL(l, CELL(L(rl), R(rl))); 
-	    noun_t nxt2 = CELL(l, R(r)); CALL1(nock_op, nxt1, f16p1, nxt2); 
+            CELLS(3);
+	    CITE(16);
+	    noun_t l = L(root); 
+	    noun_t nxt1 = CELL(l, CELL(L(rl), R(rl))); 
+	    noun_t nxt2 = CELL(l, R(r)); 
+	    END_CELLS();
+	    CALL1(nock_op, nxt1, f16p1, nxt2); 
 	  } else /* if (T(rl) != cell_type) */ {
 	    bool fits;
 	    satom_t satom = atom_get_satom(rl, &fits);
 	    if (fits) {
 	      switch (satom) {
-	      case 0: { CITE(18); noun_t nxt = CELL(R(r), L(root)); TAIL_CALL(slash_op, nxt); }
-	      case 1: { CITE(19); noun_t nxt = R(r); noun_t l = L(root); RET(nxt); }
-	      case 2: { noun_t rr = R(r);
+	      case 0: { 
+		CITE(18);
+		CELLS(1);
+		noun_t nxt = CELL(R(r), L(root));
+		END_CELLS();
+		TAIL_CALL(slash_op, nxt);
+	      }
+	      case 1: { 
+		CITE(19);
+		noun_t nxt = R(r);
+		noun_t l = L(root);
+		RET(nxt);
+	      }
+	      case 2: {
+		noun_t rr = R(r);
 		if (T(rr) == cell_type) { 
 		  CITE(20); 
+		  CELLS(2);
 		  noun_t l = L(root);
 		  noun_t nxt1 = CELL(l, L(rr));
 		  noun_t nxt2 = CELL(l, R(rr));
+		  END_CELLS();
 		  CALL1(nock_op, nxt1, f20p1, nxt2);
 		} else CRASH(machine);
 	      }
-	      case 3: { CITE(21); noun_t nxt = CELL(L(root), R(r)); CALL0(nock_op, nxt, f21); }
-	      case 4: { CITE(22); noun_t nxt = CELL(L(root), R(r)); CALL0(nock_op, nxt, f22); }
-	      case 5: { CITE(23); noun_t nxt = CELL(L(root), R(r)); CALL0(nock_op, nxt, f23); }
-	      case 6: { CITE(25); fn_ret_t fn_ret = cond1(machine, root); op = fn_ret.op; UNSHARE(root, ROOT_OWNER); root = fn_ret.root; NEXT_OP(op); }
+	      case 3: {
+		CITE(21);
+		CELLS(1);
+		noun_t nxt = CELL(L(root), R(r));
+		END_CELLS();
+		CALL0(nock_op, nxt, f21);
+	      }
+	      case 4: {
+		CITE(22);
+		CELLS(1);
+		noun_t nxt = CELL(L(root), R(r));
+		END_CELLS();
+		CALL0(nock_op, nxt, f22);
+	      }
+	      case 5: {
+		CITE(23);
+		CELLS(1);
+		noun_t nxt = CELL(L(root), R(r));
+		END_CELLS();
+		CALL0(nock_op, nxt, f23);
+	      }
+	      case 6: {
+		CITE(25);
+		fn_ret_t fn_ret = cond1(machine, root);
+		op = fn_ret.op;
+		UNSHARE(root, ROOT_OWNER);
+		root = fn_ret.root;
+		NEXT_OP(op);
+	      }
 	      case 7: { noun_t rr = R(r);
 		if (T(rr) == cell_type) { 
 		  CITE(26); 
 		  bool implement_directly = true;
 		  if (implement_directly) {
 		    // 7r ::     *[a 7 b c]         *[*[a b] c]
-		    noun_t nxt1 = CELL(L(root), L(rr)); noun_t nxt2 = R(rr); CALL1(nock_op, nxt1, f26, nxt2);
+		    CELLS(1);
+		    noun_t nxt1 = CELL(L(root), L(rr));
+		    noun_t nxt2 = R(rr); 
+		    END_CELLS(); 
+		    CALL1(nock_op, nxt1, f26, nxt2);
 		  } else {
-		    noun_t nxt = CELL(L(root), CELL(_2, CELL(L(rr), CELL(_1, R(rr)))));
+		    CELLS(4);
+		    noun_t nxt = CELL(L(root), CELL(_2, CELL(L(rr),
+		        CELL(_1, R(rr)))));
+		    END_CELLS(); 
 		    TAIL_CALL(nock_op, nxt);
 		  }
 		} else CRASH(machine);
@@ -1394,9 +1531,16 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op, noun_t root) {
 		  bool implement_directly = true;
 		  if (implement_directly) {
 		    // 8r ::     *[a 8 b c]        *[[*[a b] a] c]
-		    noun_t l = L(root); noun_t nxt1 = CELL(l, L(rr)); CALL1(nock_op, nxt1, f27, root);
+		    CELLS(1);
+		    noun_t l = L(root);
+		    noun_t nxt1 = CELL(l, L(rr));
+		    END_CELLS(); 
+		    CALL1(nock_op, nxt1, f27, root);
 		  } else {
-		    noun_t nxt = CELL(L(root), CELL(_7, CELL(CELL(CELL(_7, CELL(CELL(_0, _1), L(rr))), CELL(_0, _1)), R(rr))));
+		    CELLS(8);
+		    noun_t nxt = CELL(L(root), CELL(_7, CELL(CELL(CELL(_7,
+                        CELL(CELL(_0, _1), L(rr))), CELL(_0, _1)), R(rr))));
+		    END_CELLS(); 
 		    TAIL_CALL(nock_op, nxt);
 		  }
 		} else CRASH(machine);
@@ -1405,7 +1549,10 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op, noun_t root) {
 		if (T(rr) == cell_type) { 
 		  CITE(28); 
 		  // TODO: implement direct reduction
-		  noun_t nxt = CELL(L(root), CELL(_7, CELL(R(rr), CELL(_2, CELL(CELL(_0, _1), CELL(_0, L(rr)))))));
+		  CELLS(7);
+		  noun_t nxt = CELL(L(root), CELL(_7, CELL(R(rr), CELL(_2,
+                      CELL(CELL(_0, _1), CELL(_0, L(rr)))))));
+		  END_CELLS(); 
 		  TAIL_CALL(nock_op, nxt);
 		} else CRASH(machine);
 	      }
@@ -1416,9 +1563,14 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op, noun_t root) {
 		  noun_t nxt;
 		  if (T(rrl) == cell_type) { 
 		    // TODO: implement direct reduction
-		    nxt = CELL(L(root), CELL(_8, CELL(R(rrl), CELL(_7, CELL(CELL(_0, _2), R(rr))))));
-		  } else {
+		    CELLS(6);
+		    nxt = CELL(L(root), CELL(_8, CELL(R(rrl), CELL(_7,
+                        CELL(CELL(_0, _2), R(rr))))));
+		    END_CELLS();
+ 		  } else {
+		    CELLS(1);
 		    nxt = CELL(L(root), rrl);
+		    END_CELLS();
 		  }
 		  TAIL_CALL(nock_op, nxt);
 		} else CRASH(machine);
@@ -1465,8 +1617,18 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op, noun_t root) {
 		  CITE_END(msb > 0);
 		  RET(nxt);
 		} else {
-		  if (satom == 2) { CITE(11); noun_t nxt = L(r); noun_t rr = R(r); RET(nxt); }
-		  else if (satom == 3) { CITE(12); noun_t nxt = R(r); noun_t lr = L(r); RET(nxt); }
+		  if (satom == 2) { 
+		    CITE(11);
+		    noun_t nxt = L(r);
+		    noun_t rr = R(r);
+		    RET(nxt);
+		  }
+		  else if (satom == 3) {
+		    CITE(12);
+		    noun_t nxt = R(r);
+		    noun_t lr = L(r);
+		    RET(nxt);
+		  }
 		  /* else fall through to even/odd check */
 		}
 	      } else /* if (T(r) != cell_type) */ {
@@ -1474,8 +1636,19 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op, noun_t root) {
 	      }
 	    }
 	  } /* else fall through to even/odd check */
-	  if (atom_is_even(l)) { CITE(13); noun_t nxt = CELL(atom_div2(l, heap), R(root)); CALL0(slash_op, nxt, f13); }
-	  else { CITE(14); noun_t nxt = CELL(atom_dec_div2(l, heap), R(root)); CALL0(slash_op, nxt, f14); }
+	  if (atom_is_even(l)) { 
+	    CITE(13);
+	    CELLS(1);
+	    noun_t nxt = CELL(atom_div2(l, heap), R(root));
+	    END_CELLS();
+	    CALL0(slash_op, nxt, f13);
+	  } else {
+	    CITE(14);
+	    CELLS(1);
+	    noun_t nxt = CELL(atom_dec_div2(l, heap), R(root));
+	    END_CELLS();
+	    CALL0(slash_op, nxt, f14);
+	  }
 	}
       } else /* if (T(root) != cell_type) */ {
 	CITE(34); CRASH(machine);
@@ -1578,7 +1751,8 @@ static void free_atoms(heap_t *heap) {
 #endif
 }
 
-static void arkham_run(int n_inputs, infile_t *inputs, bool trace_flag, bool interactive_flag, const char *module_name) {
+static void arkham_run(int n_inputs, infile_t *inputs, bool trace_flag,
+    bool interactive_flag, const char *module_name) {
   for (int i = 0; i < n_inputs; ++i) {
     infile_t *input = inputs + i;
     if (input->name != NULL) 
@@ -1612,7 +1786,8 @@ static void arkham_run(int n_inputs, infile_t *inputs, bool trace_flag, bool int
 	if (interactive_flag) printf("> ");
 	noun_t top = parse(&machine, input, &eof);
 	if (NOUN_IS_DEFINED(top)) {
-	  noun_print(stdout, arkham_run_impl(&machine, nock_op, top), true); printf("\n");
+	  noun_print(stdout, arkham_run_impl(&machine, nock_op, top), true);
+	  printf("\n");
 	}
       } while (interactive_flag && !eof);
     }
@@ -1653,7 +1828,8 @@ main(int argc, const char *argv[]) {
 
   const char *trace_env = getenv("ARKHAM_TRACE");
   if (trace_env == NULL) trace_env = "false";
-  bool trace_flag = !(strcasecmp(trace_env, "no") == 0 || strcmp(trace_env, "0") == 0 || strcasecmp(trace_env, "false") == 0);
+  bool trace_flag = !(strcasecmp(trace_env, "no") == 0 ||
+      strcmp(trace_env, "0") == 0 || strcasecmp(trace_env, "false") == 0);
   bool interactive = false;
   infile_t *inputs = (infile_t *)calloc(1, argc * sizeof(infile_t));
   int n_inputs = 0;
@@ -1665,18 +1841,29 @@ main(int argc, const char *argv[]) {
     STRCMP_CASE("-i", interactive = true);
     STRCMP_CASE("--enable-tracing", trace_flag = true);
     STRCMP_CASE("--disable-tracing", trace_flag = false);
-    STRCMP_CASE("-", { inputs[n_inputs].name = NULL; inputs[n_inputs].file = stdin; ++n_inputs; });
+    STRCMP_CASE("-", {
+	inputs[n_inputs].name = NULL;
+	inputs[n_inputs].file = stdin;
+	++n_inputs; });
     TRUE_CASE(file, {
 	if (strncmp(file, "-", 1) == 0)
 	  arkham_usage("Unknown option: '%s'\n", file);
-	else
-	  { FILE *f = fopen(file, "r"); if (f != NULL) { inputs[n_inputs].name = file; inputs[n_inputs].file = f; ++n_inputs; } else arkham_usage("File not found: %s\n", file); }
+	else { 
+	  FILE *f = fopen(file, "r");
+	  if (f != NULL) {
+	    inputs[n_inputs].name = file;
+	    inputs[n_inputs].file = f;
+	    ++n_inputs;
+	  } else arkham_usage("File not found: %s\n", file);
+	}
       });
     END_MATCH_STRING();
   }
   if (n_inputs == 0) {
     // Drop into REPL if there are no file specified:
-    inputs[n_inputs].name = NULL; inputs[n_inputs].file = stdin; ++n_inputs;
+    inputs[n_inputs].name = NULL;
+    inputs[n_inputs].file = stdin;
+    ++n_inputs;
     interactive = true;
   }
   FAIL(ARKHAM_TRACE || !trace_flag, "Call tracing disabled for this build");

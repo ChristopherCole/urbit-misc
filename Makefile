@@ -27,11 +27,13 @@ endif
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
   CC_FLAGS = -std=c99
+  CXX_FLAGS =
   CXX_LINK_FLAGS = -lstdc++
 endif
 ifeq ($(UNAME_S),Darwin)
-  CC_FLAGS =
-  CXX_LINK_FLAGS = -lc++
+  CC_FLAGS = -I/opt/local/include
+  CXX_FLAGS = -I/opt/local/include
+  CXX_LINK_FLAGS = -L/opt/local/lib -lc++
 endif
 
 # -lprofiler 
@@ -43,10 +45,13 @@ arkham.o: build/bin ${SRC}/arkham.c
 	$(CC) -DARKHAM_PRODUCTION=${ARKHAM_PRODUCTION} -DARKHAM_LLVM=${ARKHAM_LLVM} ${CC_FLAGS} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/arkham.c -o build/bin/arkham.o
 
 jit.o: build/bin ${SRC}/jit.cpp
-	$(CXX) -DARKHAM_PRODUCTION=${ARKHAM_PRODUCTION} -DARKHAM_LLVM=${ARKHAM_LLVM} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/jit.cpp -o build/bin/jit.o
+	$(CXX) -DARKHAM_PRODUCTION=${ARKHAM_PRODUCTION} -DARKHAM_LLVM=${ARKHAM_LLVM} ${CXX_FLAGS} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/jit.cpp -o build/bin/jit.o
 
 build/bin:
 	mkdir -p build/bin
 
 clean:
 	rm -rf build
+
+test:
+	time (build/bin/arkham < tests/dec400000.nock)

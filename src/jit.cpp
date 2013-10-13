@@ -632,7 +632,7 @@ namespace jit {
 	initialize_args(args, args_root);
 
 #if ARKHAM_LLVM
-	compiled_fn_t fn = (compiled_fn_t)fp; //ZZZ
+	compiled_fn_t fn = (compiled_fn_t)fp; // ZZZ
 	noun_t compiled_result = (fn)(args); // ZZZ: unshare?
 	printf(">>> ");
 	noun_print(stdout, compiled_result, true); 

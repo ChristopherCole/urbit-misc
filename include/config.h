@@ -1,7 +1,7 @@
 #if !defined(CONFIG_H)
 #define CONFIG_H
 
-#define INLINE_REFS true // TODO
+#define INLINE_REFS true // TODO: Inflate cells when refs > 1
 #define ARKHAM_URC true
 #define ARKHAM_THREADED_INTERPRETER true
 

@@ -690,7 +690,7 @@ cell_new(heap_t *heap, noun_t left, noun_t right) {
 noun_t URC_INLINE
 batom_new(heap_t *heap, mpz_t val, bool clear) {
   batom_t *batom = heap_alloc_batom(heap);
-  mpz_init(batom->val); // TODO: use custom allocator
+  mpz_init(batom->val); // TODO: Use custom mpz allocator (portable image)
   mpz_set(batom->val, val);
   if (clear)
     mpz_clear(val);
@@ -1062,7 +1062,7 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
 	vec_clear(&token);
 	if (vec_size(&count) == 0) {
 	  fprintf(stderr, "Parse error: raw atom\n");
-	  exit(4); // TODO: recover instead of exit
+	  exit(4); // TODO: Recover from parser error instead of exit
 	}
 	int n = (*(int *)vec_get_top(&count)) + 1;
 	vec_set_top(&count, &n);
@@ -1070,11 +1070,11 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
       if (!started) return _UNDEFINED;
       if (vec_size(&stack) != 1) {
 	fprintf(stderr, "Parse error: unclosed '['\n");
-	exit(4); // TODO: recover instead of exit
+	exit(4); // TODO: Recover from parser error instead of exit
       }
       if (vec_size(&count) > 0) {
 	fprintf(stderr, "Parse error: unclosed '['\n");
-	exit(4); // TODO: recover instead of exit
+	exit(4); // TODO: Recover from parser error instead of exit
       }
       break;
     }
@@ -1088,12 +1088,12 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
 	started = true;
 	if (vec_size(&count) == 0) {
 	  fprintf(stderr, "Parse error: unmatched ']' at column %d\n", column);
-	  exit(4); // TODO: recover instead of exit
+	  exit(4); // TODO: Recover from parser error instead of exit
 	}
 	if (vec_size(&stack) < 2) {
 	  fprintf(stderr, "Parse error: too few atoms (%d) in a cell "
               "at column %d\n", *(int *)vec_get_top(&count), column);
-	  exit(4); // TODO: recover instead of exit
+	  exit(4); // TODO: Recover from parser error instead of exit
 	}
 	for (int i = 1; i < *(int*)vec_get_top(&count); ++i) {
 	  noun_t right = *(noun_t *)vec_pop(&stack);
@@ -1121,7 +1121,7 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
       } else {
 	fprintf(stderr, "Parse error: unexpected character '%c' "
             "at column %d\n", c, column);
-	exit(4); // TODO: recover instead of exit
+	exit(4); // TODO: Recover from parser error instead of exit
       }
     } else {
       if (c == '[' || c == ']' || c == '\n' || c == '\r' || c == ' ' ||
@@ -1138,7 +1138,7 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
 	  vec_push(&stack, &atom);
 	  if (vec_size(&count) == 0) {
 	    fprintf(stderr, "Parse error: raw atom\n");
-	    exit(4); // TODO: recover instead of exit
+	    exit(4); // TODO: Recover from parser error instead of exit
 	  }
 	  ++(*(int *)vec_get_top(&count));
 	}
@@ -1148,7 +1148,7 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
       } else {
 	fprintf(stderr, "Parse error: unexpected character '%c' "
             "at column %d\n", c, column);
-	exit(4); // TODO: recover instead of exit
+	exit(4); // TODO: Recover from parser error instead of exit
       }
     }
 
@@ -1548,7 +1548,7 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op, noun_t root) {
 	      case 9: { noun_t rr = R(r);
 		if (T(rr) == cell_type) { 
 		  CITE(28); 
-		  // TODO: implement direct reduction
+		  // TODO: Implement direct reductions
 		  CELLS(7);
 		  noun_t nxt = CELL(L(root), CELL(_7, CELL(R(rr), CELL(_2,
                       CELL(CELL(_0, _1), CELL(_0, L(rr)))))));
@@ -1562,7 +1562,7 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op, noun_t root) {
 		  noun_t rrl = L(rr);
 		  noun_t nxt;
 		  if (T(rrl) == cell_type) { 
-		    // TODO: implement direct reduction
+		    // TODO: Implement direct reductions
 		    CELLS(6);
 		    nxt = CELL(L(root), CELL(_8, CELL(R(rrl), CELL(_7,
                         CELL(CELL(_0, _2), R(rr))))));
@@ -1782,7 +1782,7 @@ static void arkham_run(int n_inputs, infile_t *inputs, bool trace_flag,
     } else {
       bool eof = false;
       do {
-	// TODO: use readline (or editline)
+	// TODO: Use readline (or editline)
 	if (interactive_flag) printf("> ");
 	noun_t top = parse(&machine, input, &eof);
 	if (NOUN_IS_DEFINED(top)) {

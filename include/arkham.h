@@ -122,6 +122,12 @@ struct fstack;
 
 struct frame;
 
+typedef struct root {
+  noun_t noun;
+  struct root *previous;
+  struct root *next;
+} root_t;
+
 typedef struct heap {
 #if ARKHAM_STATS
   unsigned long cell_alloc;
@@ -142,8 +148,12 @@ typedef struct heap {
   unsigned long batom_max_shared;
   unsigned long batom_to_shared;
   unsigned long batom_to_unshared;
+  unsigned long root_alloc;
+  unsigned long root_free;
 #endif
 #if ARKHAM_URC
+  root_t *first_root;
+  root_t *last_root;
   char *nursery_start;
   char *nursery_current;
   char *nursery_end;
@@ -215,16 +225,22 @@ typedef struct machine {
 #if ARKHAM_ASSERT
 #define CELLS(count) cell_t *cellp[1]; int _requested = count; \
   cell_t *_first = cellp[0] = heap_alloc_cells(heap, count)
+#define CELLS_ARG cellp
+#define CELLS_DECL cell_t *cellp[1]
 #define CELL(left, right) cell_new(&(cellp[0]), left, right)
 #define END_CELLS() ASSERT(_requested == (cellp[0] - _first), \
   "Wrong number of allocations\n");
 #else /* #if !ARKHAM_ASSERT */
 #define CELLS(count) cell_t *cellp[1]; cellp[0] = heap_alloc_cells(heap, count)
+#define CELLS_ARG cellp
+#define CELLS_DECL cell_t *cellp[1]
 #define CELL(left, right) cell_new(&(cellp[0]), left, right)
 #define END_CELLS() do { } while (false)
 #endif /* #if ARKHAM_ASSERT */
 #else /* #if !ARKHAM_URC */
 #define CELLS(count) do { } while(false)
+#define CELLS_ARG NULL
+#define CELLS_DECL void *cellp
 #define CELL(left, right) cell_new(heap, left, right)
 #define END_CELLS() do { } while (false)
 #endif /* #if ARKHAM_URC */
@@ -284,8 +300,8 @@ void machine_set(machine_t *m);
 void arkham_crash(machine_t *machine, const char *format, ...);
 
 void arkham_fail(const char *predicate, const char *file, 
-		 const char *function, int line_number, 
-		 const char *format, ...);
+                 const char *function, int line_number, 
+                 const char *format, ...);
 
 void arkham_log(const char *format, ...);
 
@@ -405,6 +421,10 @@ heap_alloc_cells(heap_t *heap, int count) {
 
   return cell;
 }
+
+root_t *root_new(heap_t *heap, noun_t noun);
+
+void root_delete(heap_t *heap, root_t *root);
 
 typedef struct vec_s {
   size_t elem_count;

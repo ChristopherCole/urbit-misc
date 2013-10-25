@@ -26,23 +26,23 @@ noun_nop(noun_t noun) {
 #if ALLOC_DEBUG
 /* When doing allocation debugging we need ownership information: */
 #define SHARE_RC_SPACE(noun, o) noun_share(noun, heap, o)
+#define SHARE_CHILD_RC_SPACE(noun, o) noun_share(noun, heap, o)
 #define UNSHARE_RC_SPACE(noun, o) noun_unshare(noun, heap, true, o)
 #define UNSHARE_CHILD_RC_SPACE(noun, o) noun_unshare(noun, heap, false, o)
 #else /* #if !ALLOC_DEBUG */
 #define SHARE_RC_SPACE(noun, o) noun_share(noun, heap)
+#define SHARE_CHILD_RC_SPACE(noun, o) noun_share(noun, heap)
 #define UNSHARE_RC_SPACE(noun, o) noun_unshare(noun, heap, true)
 #define UNSHARE_CHILD_RC_SPACE(noun, o) noun_unshare(noun, heap, false)
 #endif /* #if ALLOC_DEBUG */
 
-#if ARKHAM_URC
+#if ARKHAM_USE_NURSERY
 #define SHARE(noun, o) noun_nop(noun)
 #define UNSHARE(noun, o)
-#define UNSHARE_CHILD(noun, o)
-#else /* #if !ARKHAM_URC */
+#else /* #if !ARKHAM_USE_NURSERY */
 #define SHARE(noun, o) SHARE_RC_SPACE(noun, o)
 #define UNSHARE(noun, o) UNSHARE_RC_SPACE(noun, o)
-#define UNSHARE_CHILD(noun, o) UNSHARE_CHILD_RC_SPACE(noun, o)
-#endif /* #if ARKHAM_URC */
+#endif /* #if ARKHAM_USE_NURSERY */
 
 enum op_t { 
   /* real (visible) operators */
@@ -316,7 +316,7 @@ heap_print_stats(heap_t *heap, FILE *file) {
   fprintf(file, "root_free=%lu\n", heap->root_free);
   fprintf(file, "gc_count=%lu\n", heap->gc_count);
 
-#if ARKHAM_URC
+#if ARKHAM_USE_NURSERY
   fprintf(file, "nursery used=%lu\n", (heap->nursery_current -
     heap->nursery_start));
   fprintf(file, "nursery size=%lu\n", (heap->nursery_end -
@@ -325,7 +325,7 @@ heap_print_stats(heap_t *heap, FILE *file) {
     heap->write_log_start));
   fprintf(file, "write_log size=%lu\n", (heap->write_log_end -
     heap->write_log_start));
-#endif /* #if ARKHAM_URC */
+#endif /* #if ARKHAM_USE_NURSERY */
 #endif /* #if ARKHAM_STATS */
 
 #if ALLOC_DEBUG
@@ -355,8 +355,8 @@ heap_print_stats(heap_t *heap, FILE *file) {
 #endif /* #if ALLOC_DEBUG */
 }
 
-#if ARKHAM_URC
-#define NURSERY_SIZE (512 * 1024 * 1024)
+#if ARKHAM_USE_NURSERY
+#define NURSERY_SIZE (512)
 #define WRITE_LOG_SIZE (512 * 1024 * 1024)
 #endif
 
@@ -366,18 +366,18 @@ static heap_t *
 heap_new() {
   heap_t *heap;
 
-#if ARKHAM_URC
+#if ARKHAM_USE_NURSERY
   size_t heap_size = ALIGN(sizeof(heap_t), sizeof(write_log_t));
   void *mapped = mmap(NULL, heap_size + NURSERY_SIZE + WRITE_LOG_SIZE,
     PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
   FAIL(mapped != MAP_FAILED, "Memory map failed: size = %lu, errno = %d, "
     "error = %s\n", (size_t)NURSERY_SIZE, errno, strerror(errno));
   heap = (heap_t *)mapped;
-#else /* #if !ARKHAM_URC */
+#else /* #if !ARKHAM_USE_NURSERY */
   heap = (heap_t *)calloc(1, sizeof(heap_t));
-#endif /* #if ARKHAM_URC */
+#endif /* #if ARKHAM_USE_NURSERY */
 
-#if ARKHAM_URC
+#if ARKHAM_USE_NURSERY
   heap->nursery_start = ((char *)heap) + heap_size;
   heap->nursery_current = heap->nursery_start;
   heap->nursery_end = ((char *)heap) + NURSERY_SIZE;
@@ -390,7 +390,7 @@ heap_new() {
 
   heap->first_root = NULL;
   heap->last_root = NULL;
-#endif /* #if ARKHAM_URC */
+#endif /* #if ARKHAM_USE_NURSERY */
 
   return heap;
 }
@@ -412,7 +412,7 @@ heap_free_free_list(heap_t *heap) {
 
 static void
 heap_free(heap_t *heap) {
-#if ARKHAM_URC
+#if ARKHAM_USE_NURSERY
   munmap(heap, NURSERY_SIZE);
 #else
   free(heap);
@@ -435,14 +435,14 @@ heap_register_debug(heap_t *heap, noun_metainfo_t *noun_metainfo,
 }
 #endif /* #if ALLOC_DEBUG */
 
-#if ARKHAM_URC
+#if ARKHAM_USE_NURSERY
 static bool
 heap_is_nursery(heap_t *heap, void *ptr) {
   return (char*)ptr >= heap->nursery_start && (char*)ptr < heap->nursery_end;
 }
 #endif
 
-#if ARKHAM_URC
+#if ARKHAM_USE_NURSERY
 void
 heap_trace_nursery(noun_t *address, noun_metainfo_t *owner, heap_t *heap) {
   // TODO: Batoms in nursery
@@ -488,10 +488,31 @@ heap_trace_nursery(noun_t *address, noun_metainfo_t *owner, heap_t *heap) {
     ASSERT0(false); //XXX: TODO
   }
 }
-#endif /* #if ARKHAM_URC */
+#endif /* #if ARKHAM_USE_NURSERY */
 
 typedef void (*do_roots_fn_t)(machine_t *machine, noun_t *address,
                               noun_metainfo_t *owner, void *data);
+
+typedef void (*roots_hook_fn_t)(struct machine *machine,
+                                do_roots_fn_t fn, void *data, void *extra_data);
+
+static roots_hook_fn_t roots_hook_fn;
+static void *roots_hook_data;
+
+void *roots_hook_add(roots_hook_fn_t fn, void *data) {
+  // REVISIT: More than one hook
+  ASSERT0(roots_hook_fn == NULL);
+  roots_hook_fn = fn;
+  roots_hook_data = data;
+  return (void*)1;
+}
+
+void roots_hook_remove(void *roots_hook_handle) {
+  // REVISIT: More than one hook
+  ASSERT0(roots_hook_fn != NULL && roots_hook_handle == (void*)1);
+  roots_hook_fn = NULL;
+  roots_hook_data = NULL;
+}
 
 static void
 do_roots(machine_t *machine, do_roots_fn_t fn, void *data) {
@@ -502,6 +523,9 @@ do_roots(machine_t *machine, do_roots_fn_t fn, void *data) {
   fstack_t *stack = machine->stack;
   for (size_t frame = 0; frame < stack->size; ++frame)
     fn(machine, &(stack->frames[frame].data), STACK_OWNER, data);
+
+  if (roots_hook_fn != NULL)
+    roots_hook_fn(machine, fn, data, roots_hook_data);
 }
 
 static void roots_hash(machine_t *machine, noun_t *address, 
@@ -522,27 +546,27 @@ static void roots_sanity(machine_t *machine, noun_t *address,
 
 static void roots_print(machine_t *machine, noun_t *address, 
                        noun_metainfo_t *owner, void *data) {
-  //XXX: stdout
+  FILE *file = (FILE *)data;
 #if ALLOC_DEBUG
-  noun_metainfo_print_metainfo(stdout, "owner: ", owner, ", noun: ");
+  noun_metainfo_print_metainfo(file, "owner: ", owner, ", noun: ");
 #else
-  fprintf(stdout, "noun: ");
+  fprintf(file, "noun: ");
 #endif
   if (NOUN_IS_DEFINED(*address))
-    noun_print(stdout, *address, true, true);
+    noun_print(file, *address, true, true);
   else
-    fprintf(stdout, "<undefined>");
-  fprintf(stdout, "\n");
+    fprintf(file, "<undefined>");
+  fprintf(file, "\n");
 }
 
-#if ARKHAM_URC
+#if ARKHAM_USE_NURSERY
 static void roots_trace_nursery(machine_t *machine, noun_t *address, 
                                 noun_metainfo_t *owner, void *data) {
   heap_trace_nursery(address, owner, machine->heap);
 }
-#endif /* #if ARKHAM_URC */
+#endif /* #if ARKHAM_USE_NURSERY */
 
-#if ARKHAM_URC
+#if ARKHAM_USE_NURSERY
 static void roots_build_write_log(machine_t *machine, noun_t *address,
                                   noun_metainfo_t *owner, void *data) {
   if (NOUN_IS_DEFINED(*address))
@@ -555,9 +579,9 @@ static void roots_build_write_log(machine_t *machine, noun_t *address,
 #endif
     };
 }
-#endif /* #if ARKHAM_URC */
+#endif /* #if ARKHAM_USE_NURSERY */
 
-#if ARKHAM_URC
+#if ARKHAM_USE_NURSERY
 void
 collect_garbage(size_t size) {
   // TODO: add timing and logging
@@ -568,7 +592,7 @@ collect_garbage(size_t size) {
   heap_t *heap = machine->heap;
   fstack_t *stack = machine->stack;
 
-  /* do_roots(machine, roots_print, NULL); */
+  /* do_roots(machine, roots_print, stdout); */
   /* { //XXX: stdout */
   /*   Fnv_t hash = FNV1_INIT; */
   /*   do_roots(machine, roots_hash, &hash); */
@@ -607,14 +631,14 @@ collect_garbage(size_t size) {
 
   /* heap_print_stats(heap, machine->trace_file); */
 
-  /* do_roots(machine, roots_print, NULL); */
+  /* do_roots(machine, roots_print, stdout); */
   /* { //XXX: stdout */
   /*   Fnv_t hash = FNV1_INIT; */
   /*   do_roots(machine, roots_hash, &hash); */
   /*   fprintf(stdout, "roots hash (after): %" SATOM_X_FMT "\n", hash); */
   /* } */
 }
-#endif /* #if ARKHAM_URC */
+#endif /* #if ARKHAM_USE_NURSERY */
 
 root_t *
 root_new(heap_t *heap, noun_t noun) {
@@ -661,7 +685,7 @@ heap_alloc_cells_stats(heap_t *heap, int count) {
 }
 #endif /* #if ARKHAM_STATS */
 
-static URC_INLINE batom_t *
+static ARKHAM_USE_NURSERY_INLINE batom_t *
 heap_alloc_batoms(heap_t *heap, int count) {
   // XXX: we have no way of adjusting to data motion -> make batoms like cells
   batom_t *batom = (batom_t *)heap_alloc(heap, count * sizeof(batom_t), NULL);
@@ -677,7 +701,7 @@ heap_alloc_batoms(heap_t *heap, int count) {
   return batom;
 }
 
-static URC_INLINE batom_t *
+static ARKHAM_USE_NURSERY_INLINE batom_t *
 heap_alloc_batom(heap_t *heap) {
   batom_t *batom = heap_alloc_batoms(heap, 1);
 
@@ -688,7 +712,7 @@ heap_alloc_batom(heap_t *heap) {
   return batom;
 }
 
-static URC_INLINE void
+static ARKHAM_USE_NURSERY_INLINE void
 heap_free_cell(heap_t *heap, cell_t *cell) {
   ASSERT0(cell->metainfo.refs != ALLOC_FREE_MARKER);
   cell->metainfo.refs = ALLOC_FREE_MARKER;
@@ -702,9 +726,9 @@ heap_free_cell(heap_t *heap, cell_t *cell) {
 #endif
   } else {
 #endif
-#if !ARKHAM_URC && !ALLOC_DEBUG
+#if !ARKHAM_USE_NURSERY && !ALLOC_DEBUG
     free(cell);
-#endif /* #if !ARKHAM_URC && !ALLOC_DEBUG */
+#endif /* #if !ARKHAM_USE_NURSERY && !ALLOC_DEBUG */
 #if ARKHAM_STATS
     ASSERT0(heap->cell_free < heap->cell_alloc);
     ++heap->cell_free;
@@ -722,9 +746,9 @@ heap_free_batom(heap_t *heap, batom_t *batom) {
 #endif
   ASSERT0(batom->metainfo.refs != ALLOC_FREE_MARKER);
   batom->metainfo.refs = ALLOC_FREE_MARKER;
-#if !ARKHAM_URC && !ALLOC_DEBUG
+#if !ARKHAM_USE_NURSERY && !ALLOC_DEBUG
     free(batom);
-#endif /* #if !ARKHAM_URC && !ALLOC_DEBUG */
+#endif /* #if !ARKHAM_USE_NURSERY && !ALLOC_DEBUG */
 }
 
 bool
@@ -871,8 +895,8 @@ noun_unshare(noun_t noun, heap_t *heap, bool toplevel) {
     ASSERT0(refs != ALLOC_FREE_MARKER);
     if (refs == 1) {
       if (type == cell_type) {
-        UNSHARE_CHILD(noun_get_left(noun), noun_metainfo);
-        UNSHARE_CHILD(noun_get_right(noun), noun_metainfo);
+        UNSHARE_CHILD_RC_SPACE(noun_get_left(noun), noun_metainfo);
+        UNSHARE_CHILD_RC_SPACE(noun_get_right(noun), noun_metainfo);
         heap_free_cell(heap, noun_as_cell(noun));
 #if SHARED_CELL_LIST
         if (toplevel) {
@@ -908,38 +932,40 @@ noun_unshare(noun_t noun, heap_t *heap, bool toplevel) {
 
 noun_t
 cell_set_left(noun_t noun, noun_t left, heap_t *heap) {
+  // XXX Handle four cases: N=nursery,RC=rc-space: [N,RC] -> [N,RC]
   ASSERT0(noun_get_type(noun) == cell_type);
   cell_t *cell = noun_as_cell(noun);
-  // ZZZ: if !logged then log
-  SHARE(left, &(cell->metainfo));
-  UNSHARE(noun_get_left(noun), &(cell->metainfo));
+  // XXX: if !logged then log
+  SHARE_CHILD_RC_SPACE(left, &(cell->metainfo));
+  UNSHARE_CHILD_RC_SPACE(noun_get_left(noun), &(cell->metainfo));
   cell->base.left = left;
   return CELL_AS_NOUN(cell);
 }
 
 noun_t
 cell_set_right(noun_t noun, noun_t right, heap_t *heap) {
+  // XXX Handle four cases: N=nursery,RC=rc-space: [N,RC] -> [N,RC]
   ASSERT0(noun_get_type(noun) == cell_type);
   cell_t *cell = noun_as_cell(noun);
-  // ZZZ: if !logged then log
-  SHARE(right, &(cell->metainfo));
-  UNSHARE(noun_get_right(noun), &(cell->metainfo));
+  // XXX: if !logged then log
+  SHARE_CHILD_RC_SPACE(right, &(cell->metainfo));
+  UNSHARE_CHILD_RC_SPACE(noun_get_right(noun), &(cell->metainfo));
   cell->base.right = right;
   return CELL_AS_NOUN(cell);
 }
 
 //XXX: alloc without inline refs & metainfo
-#if ARKHAM_URC
-URC_INLINE cell_t *
+#if ARKHAM_USE_NURSERY
+ARKHAM_USE_NURSERY_INLINE cell_t *
 cell_new_nursery(cell_t **cellp, noun_t left, noun_t right) {
   cell_t *cell = (*cellp)++;
   cell->base.left = left;
   cell->base.right = right;
   return cell;
 }
-#endif /* #if ARKHAM_URC */
+#endif /* #if ARKHAM_USE_NURSERY */
 
-static URC_INLINE cell_t *
+static ARKHAM_USE_NURSERY_INLINE cell_t *
 heap_alloc_cell(heap_t *heap) {
   cell_t *cell;
 
@@ -977,7 +1003,7 @@ heap_alloc_cell(heap_t *heap) {
   return cell;
 }
 
-URC_INLINE cell_t *
+ARKHAM_USE_NURSERY_INLINE cell_t *
 cell_new(heap_t *heap, noun_t left, noun_t right) {
   cell_t *cell = heap_alloc_cell(heap);
   cell->base.left = left;
@@ -987,7 +1013,7 @@ cell_new(heap_t *heap, noun_t left, noun_t right) {
   return cell;
 }
 
-noun_t URC_INLINE
+noun_t ARKHAM_USE_NURSERY_INLINE
 batom_new(heap_t *heap, mpz_t val, bool clear) {
   batom_t *batom = heap_alloc_batom(heap);
   mpz_init(batom->val); // TODO: Use custom mpz allocator (portable image)
@@ -1371,7 +1397,23 @@ stack_pop(fstack_t *stack, bool unshare, heap_t *heap) {
   return stack;
 }
 
+#if ARKHAM_USE_NURSERY
+static void
+trace_parse_stack(machine_t *machine, do_roots_fn_t fn, void *data,
+                  void *extra_data) {
+  heap_t *heap = machine->heap;
+  vec_t *vec = (vec_t *)extra_data;
+  size_t size = vec_size(vec);
+  for (int i = 0; i < size; ++i) {
+    printf("i=%d, addr=%p\n", i, vec_get(vec, i));//XXX
+    fn(machine, (noun_t *)vec_get(vec, i), STACK_OWNER, data);
+  }
+}
+#endif
+
 static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
+  printf("enter parse\n");//XXX
+
   heap_t *heap = machine->heap;
   vec_t token;
   vec_init(&token, sizeof(char));
@@ -1382,6 +1424,9 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
   vec_t count;
   vec_init(&count, sizeof(int));
   bool started = false;
+  noun_t result = _UNDEFINED;
+
+  void *handle = roots_hook_add(trace_parse_stack, &stack);
 
   while (true) {
     int c = fgetc(input->file);
@@ -1400,7 +1445,7 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
         int n = (*(int *)vec_get_top(&count)) + 1;
         vec_set_top(&count, &n);
       }
-      if (!started) return _UNDEFINED;
+      if (!started) goto done;
       if (vec_size(&stack) != 1) {
         fprintf(stderr, "Parse error: unclosed '['\n");
         exit(4); // TODO: Recover from parser error instead of exit
@@ -1429,9 +1474,9 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
           exit(4); // TODO: Recover from parser error instead of exit
         }
         for (int i = 1; i < *(int*)vec_get_top(&count); ++i) {
+          CELLS(1);
           noun_t right = *(noun_t *)vec_pop(&stack);
           noun_t left = *(noun_t *)vec_pop(&stack);
-          CELLS(1);
           noun_t cell = CELL(left, right);
           END_CELLS();
           vec_push(&stack, &cell);
@@ -1440,7 +1485,8 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
         if (vec_size(&count) > 0)
           ++(*(int *)vec_get_top(&count));
         if (vec_size(&stack) == 1 && vec_size(&count) == 0) {
-          return *(noun_t *)vec_get_top(&stack);
+          result = *(noun_t *)vec_get_top(&stack);
+          goto done;
         }
       } else if (c >= '0' && c <= '9') {
         started = true;
@@ -1488,7 +1534,22 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
     ++column;
   }
 
-  return *(noun_t *)vec_get_top(&stack);
+  result = *(noun_t *)vec_get_top(&stack);
+
+ done:
+
+  roots_hook_remove(handle);
+
+  printf("exit parse\n");//XXX
+
+  do_roots(machine, roots_print, stdout);
+  { //XXX: stdout
+    Fnv_t hash = FNV1_INIT;
+    do_roots(machine, roots_hash, &hash);
+    fprintf(stdout, "roots hash (before): %" SATOM_X_FMT "\n", hash);
+  }
+
+  return result;
 }
 
 static void cite(FILE *file, int line, const char *suffix) {
@@ -1719,12 +1780,20 @@ static fn_ret_t cond1(machine_t *machine, root_t *root) {
   return (fn_ret_t){ .root = next_root, .op = nock_op };
 }
 
+void booga() { } // XXX
+
 static inline void inc_ops(machine_t *machine) { 
 #if ARKHAM_OP_TRACE
+  if (true)
+    do_roots(machine, roots_print, machine->trace_file);
   Fnv_t hash = FNV1_INIT;
   do_roots(machine, roots_hash, &hash);
   fprintf(machine->trace_file, "op=%09lu hash=%016" SATOM_X_FMT "\n",
           machine->ops, hash);
+  if (true)
+    heap_print_stats(machine->heap, machine->trace_file);
+  if (machine->ops == 5)
+    booga();
 #endif
   do_roots(machine, roots_sanity, NULL);//XXX
 #if ARKHAM_STATS
@@ -2092,7 +2161,7 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
   ret:
     if (stack_is_empty(machine->stack)) {
       root_noun = root->noun;
-#if ARKHAM_URC && ARKHAM_STATS
+#if ARKHAM_USE_NURSERY && ARKHAM_STATS
       collect_garbage(0);
 #endif
       root_delete(heap, root);

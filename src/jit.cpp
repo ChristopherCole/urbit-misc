@@ -225,16 +225,16 @@ noun_nop(noun_t noun) {
   return noun;
 }
 
-#if ARKHAM_URC
+#if ARKHAM_USE_NURSERY
 #define SHARE(n, o) noun_nop(n)
 #define UNSHARE(n, o)
 #elif ALLOC_DEBUG
 #define SHARE(n, o) noun_share(n, machine->heap, o)
 #define UNSHARE(n, o) noun_unshare(n, machine->heap, true, o)
-#else /* #if !ARKHAM_URC && !ALLOC_DEBUG */
+#else /* #if !ARKHAM_USE_NURSERY && !ALLOC_DEBUG */
 #define SHARE(n, o) noun_share(n, machine->heap)
 #define UNSHARE(n, o) noun_unshare(n, machine->heap, true)
-#endif /* #if ARKHAM_URC */
+#endif /* #if ARKHAM_USE_NURSERY */
 
 #define ASSIGN(l, r, o) do { \
   noun_t old = l; l = SHARE(r, o) ; UNSHARE(old, o); \

@@ -45,10 +45,10 @@ extern "C" {
 #define WARN(f, ...) do { if (IS_WARN) arkham_log(WARN_PREFIX " %S %s %d: " f, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); } while (false)
 #define WARN0(s) do { if (ARKHAM_LOG >= ARKHAM_WARN) arkham_log(WARN_PREFIX " " s); } while (false)
 
-#if ARKHAM_URC
-#define URC_INLINE inline
+#if ARKHAM_USE_NURSERY
+#define ARKHAM_USE_NURSERY_INLINE inline
 #else
-#define URC_INLINE
+#define ARKHAM_USE_NURSERY_INLINE
 #endif
 
 /* TODO: more details on noun/atom representation */
@@ -184,7 +184,7 @@ typedef struct heap {
   unsigned long root_free;
   unsigned long gc_count;
 #endif
-#if ARKHAM_URC
+#if ARKHAM_USE_NURSERY
   root_t *first_root;
   root_t *last_root;
   char *nursery_start;
@@ -193,7 +193,7 @@ typedef struct heap {
   write_log_t *write_log_start;
   write_log_t *write_log_current;
   write_log_t *write_log_end;
-#endif /* ARKHAM_URC */
+#endif /* ARKHAM_USE_NURSERY */
 #if ALLOC_DEBUG
   // A linked list of all allocated cells:
   unsigned long current_id;
@@ -265,7 +265,7 @@ typedef struct machine {
 #define NOUN_IS_UNDEFINED(noun) NOUN_EQUALS(noun, _UNDEFINED)
 #define NOUN_IS_DEFINED(noun) !NOUN_EQUALS(noun, _UNDEFINED)
 #define NOUN_IS_FORWARDED_MARKER(noun) NOUN_EQUALS(noun, _FORWARDED_MARKER)
-#if ARKHAM_URC
+#if ARKHAM_USE_NURSERY
 #if ARKHAM_ASSERT
 #define CELLS(count) \
   cell_t *cellp[1]; \
@@ -292,14 +292,14 @@ typedef struct machine {
   left, right))
 #define END_CELLS() do { } while (false)
 #endif /* #if ARKHAM_ASSERT */
-#else /* #if !ARKHAM_URC */
+#else /* #if !ARKHAM_USE_NURSERY */
 #define CELLS(count) do { } while (false)
 #define DATA_MOVED() false
 #define CELLS_ARG NULL
 #define CELLS_DECL void *cellp
 #define CELL(left, right) CELL_AS_NOUN(cell_new(heap, left, right))
 #define END_CELLS() do { } while (false)
-#endif /* #if ARKHAM_URC */
+#endif /* #if ARKHAM_USE_NURSERY */
 
 /* Owners from the "root set": */
 /* For the stack */
@@ -421,7 +421,7 @@ void noun_metainfo_print_metainfo(FILE *file, const char *prefix,
 
 const char *noun_type_to_string(enum noun_type noun_type);
 
-#if ARKHAM_URC
+#if ARKHAM_USE_NURSERY
 cell_t *cell_new_nursery(struct cell **cellp, noun_t left, noun_t right);
 #endif
 
@@ -460,7 +460,7 @@ static inline char *
 heap_alloc(heap_t *heap, size_t size, bool *possible_data_motion) {
   char *chunk;
 
-#if ARKHAM_URC
+#if ARKHAM_USE_NURSERY
   char *nursery_next = heap->nursery_current + size;
   if (nursery_next > heap->nursery_end) {
     if (possible_data_motion != NULL)
@@ -470,9 +470,9 @@ heap_alloc(heap_t *heap, size_t size, bool *possible_data_motion) {
   }
   chunk = heap->nursery_current;
   heap->nursery_current = nursery_next;
-#else /* #if !ARKHAM_URC */
+#else /* #if !ARKHAM_USE_NURSERY */
   chunk = (cell_t *)calloc(1, size);
-#endif /* #if ARKHAM_URC */
+#endif /* #if ARKHAM_USE_NURSERY */
 
   return chunk;
 }
@@ -482,7 +482,7 @@ heap_alloc_cells(heap_t *heap, int count, bool *possible_data_motion) {
   cell_t *cell = (cell_t *)heap_alloc(heap, count * sizeof(cell_t),
                                       possible_data_motion);
 
-#if ARKHAM_STATS && !ARKHAM_URC
+#if ARKHAM_STATS && !ARKHAM_USE_NURSERY
   heap_alloc_cells_stats(heap, count);
 #endif
 

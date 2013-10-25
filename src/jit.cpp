@@ -262,14 +262,14 @@ namespace jit {
     class LocalVariable {
     public:
       char *name;
-      noun_header_t *owner;
+      noun_metainfo_t *owner;
       noun_t value;
 #if ARKHAM_LLVM
       Value *llvm_value;
       noun_t initial_value;
 #endif
 
-      LocalVariable(char *name, noun_t initial_value, noun_header_t *owner) {
+      LocalVariable(char *name, noun_t initial_value, noun_metainfo_t *owner) {
         this->name = name;
         this->owner = owner;
         this->value = _UNDEFINED;
@@ -666,7 +666,7 @@ namespace jit {
         compiled_fn_t fn = (compiled_fn_t)fp; // ZZZ
         noun_t compiled_result = (fn)(args); // ZZZ: unshare?
         printf(">>> ");
-        noun_print(stdout, compiled_result, true); 
+        noun_print(stdout, compiled_result, true, true); 
         printf("\n");
 #endif
     
@@ -1687,7 +1687,7 @@ void test_jit(noun_t args) { //ZZZ
   
   env->prep(root);
 
-  root->dump(env, machine->file, 0);
+  root->dump(env, machine->trace_file, 0);
 
 #if ARKHAM_LLVM
   env->compile(root);
@@ -1700,9 +1700,9 @@ void test_jit(noun_t args) { //ZZZ
     ERROR0("Evaluation failed\n");
   else {
     printf("%s(", (do_fib ? "fib" : "dec")); 
-    noun_print(stdout, args, true); 
+    noun_print(stdout, args, true, true);
     printf(")=");
-    noun_print(stdout, result, true);
+    noun_print(stdout, result, true, true);
     printf("\n");
     UNSHARE(result, ENV_OWNER);
   }

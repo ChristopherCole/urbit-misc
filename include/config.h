@@ -11,11 +11,18 @@
 #ifndef ARKHAM_LLVM
 #define ARKHAM_LLVM true
 #endif
+#ifndef ARKHAM_LOG_FILE
+#define ARKHAM_LOG_FILE "/var/tmp/arkham.log"
+#endif
+#ifndef ARKHAM_TRACE_FILE
+#define ARKHAM_TRACE_FILE "/var/tmp/arkham.trace"
+#endif
 
-#define ALLOC_DEBUG (!ARKHAM_PRODUCTION && !ARKHAM_URC)
+#define ALLOC_DEBUG (!ARKHAM_PRODUCTION)
 #define ARKHAM_TRACE (!ARKHAM_PRODUCTION)
 #define ARKHAM_ASSERT (!ARKHAM_PRODUCTION)
 #define ARKHAM_STATS (!ARKHAM_PRODUCTION)
+#define ARKHAM_OP_TRACE false
 
 #define ALLOC_DEBUG_PRINT ALLOC_DEBUG
 #define SHARED_CELL_LIST_SIZE 0

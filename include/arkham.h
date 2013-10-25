@@ -21,6 +21,8 @@ extern "C" {
 #include <config.h>
 #include <stdio.h>
 
+#include "fnv.h"
+
 #define ASSERT(p, ...) do { if (ARKHAM_ASSERT && !(p)) arkham_fail(#p, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); } while(false)
 #define FAIL(p, ...) do { if (!(p)) arkham_fail(#p, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); } while(false)
 #define ASSERT0(p) do { if (ARKHAM_ASSERT && !(p)) arkham_fail(#p, __FILE__, __FUNCTION__, __LINE__, NULL); } while(false)
@@ -57,12 +59,22 @@ static mpz_t SATOM_MAX_MPZ;
 /* 64 bit pointers */
 typedef uint64_t satom_t;
 #define SATOM_FMT PRIu64
+#define SATOM_X_FMT PRIx64
 #define SATOM_T_MAX UINT64_MAX
+typedef Fnv64_t Fnv_t;
+#define FNV1_INIT FNV1_64_INIT
+#define FNV_STR fnv_64_str
+#define FNV_BUF fnv_64_buf
 #elif UINTPTR_MAX == UINT32_MAX
 /* 32 bit pointers */
 typedef uint32_t satom_t;
 #define SATOM_FMT PRIu32
+#define SATOM_X_FMT PRIx32
 #define SATOM_T_MAX UINT32_MAX
+typedef Fnv32_t Fnv_t;
+#define FNV1_INIT FNV1_32_INIT
+#define FNV_STR fnv_32_str
+#define FNV_BUF fnv_32_buf
 #else
 /* PDP-10, is that you? */
 #error Unsupported pointer size (require 32 or 64 bits)
@@ -70,25 +82,41 @@ typedef uint32_t satom_t;
 
 typedef struct { satom_t value; } noun_t;
 
-typedef struct noun_header { 
+#define ARKHAM_PADDING (ALLOC_DEBUG && !INLINE_REFS) || \
+  (!ALLOC_DEBUG && INLINE_REFS)
+
+enum noun_type {
+  cell_type,
+  batom_type,
+  satom_type
+};
+
+typedef struct noun_metainfo { 
 #if INLINE_REFS
   satom_t refs;
 #endif
 #if ALLOC_DEBUG
-  struct noun_header **owners;
-  struct noun_header *next;
+  struct noun_metainfo **owners;
+  struct noun_metainfo *next;
   satom_t id;
+  enum noun_type type;
 #endif
 
-#if (ALLOC_DEBUG && !INLINE_REFS) || (!ALLOC_DEBUG && INLINE_REFS)
+#if ARKHAM_PADDING
   satom_t _padding;
 #endif
-} noun_header_t;
+} noun_metainfo_t;
 
-typedef struct cell {
-  noun_header_t header;
+typedef struct cell_base {
   noun_t left;
   noun_t right;
+} cell_base_t;
+
+//XXX: cell->tagged_cell ; cell_base->cell ; assert non-nursery on calls 
+//XXX: to query metainfo
+typedef struct cell {
+  noun_metainfo_t metainfo;
+  cell_base_t base;
 } cell_t;
 
 #if !INLINE_REFS
@@ -100,15 +128,9 @@ typedef struct fat_cell {
 #endif
 
 typedef struct {
-  noun_header_t header;
+  noun_metainfo_t metainfo;
   mpz_t val;
 } batom_t;
-
-enum noun_type {
-  cell_type,
-  batom_type,
-  satom_type
-};
 
 #if ARKHAM_LLVM
 void llvm_init_global();
@@ -128,28 +150,39 @@ typedef struct root {
   struct root *next;
 } root_t;
 
+typedef struct write_log {
+  noun_t *address;
+  noun_t noun;
+#if ALLOC_DEBUG
+  noun_metainfo_t *owner;
+#endif
+} write_log_t;
+
 typedef struct heap {
 #if ARKHAM_STATS
   unsigned long cell_alloc;
-  unsigned long cell_free_list_alloc;
   unsigned long cell_free;
+  unsigned long cell_free_list_alloc;
   unsigned long cell_free_list_free;
-  unsigned long cell_max;
+  unsigned long cells_max;
   unsigned long cell_shared;
-  unsigned long cell_max_shared;
+  unsigned long cells_max_shared;
+  unsigned long cell_max_refs;
   unsigned long cell_to_shared;
   unsigned long cell_to_unshared;
   unsigned long cell_overflow_to_shared;
   unsigned long cell_stably_shared;
   unsigned long batom_alloc;
   unsigned long batom_free;
-  unsigned long batom_max;
+  unsigned long batoms_max;
   unsigned long batom_shared;
-  unsigned long batom_max_shared;
+  unsigned long batoms_max_shared;
+  unsigned long batom_max_refs;
   unsigned long batom_to_shared;
   unsigned long batom_to_unshared;
   unsigned long root_alloc;
   unsigned long root_free;
+  unsigned long gc_count;
 #endif
 #if ARKHAM_URC
   root_t *first_root;
@@ -157,12 +190,15 @@ typedef struct heap {
   char *nursery_start;
   char *nursery_current;
   char *nursery_end;
+  write_log_t *write_log_start;
+  write_log_t *write_log_current;
+  write_log_t *write_log_end;
 #endif /* ARKHAM_URC */
 #if ALLOC_DEBUG
   // A linked list of all allocated cells:
   unsigned long current_id;
-  noun_header_t *first;
-  noun_header_t *last;
+  noun_metainfo_t *first;
+  noun_metainfo_t *last;
 #endif
 #if CELL_FREE_LIST
   // A circular buffer of freed cells:
@@ -181,7 +217,9 @@ typedef struct heap {
 typedef struct machine {
   struct fstack *stack;
   heap_t *heap;
-  FILE *file;
+  FILE *out_file;
+  FILE *log_file;
+  FILE *trace_file;
 #if ARKHAM_LLVM
   struct llvm_s *llvm;
 #endif
@@ -198,8 +236,12 @@ typedef struct machine {
 #define NOUN_NOT_SATOM_FLAG 1
 #define NOUN_CELL_FLAG 2
 #define NOUN_FLAGS (NOUN_NOT_SATOM_FLAG | NOUN_CELL_FLAG)
+//XXX: cell->tagged_cell ; cell_base->cell ; assert non-nursery on calls 
+//XXX: to query metainfo
 #define NOUN_AS_PTR(noun) ((noun).value & ~(satom_t)NOUN_FLAGS)
-#define NOUN_AS_NOUN_HEADER(noun) ((noun_header_t *)NOUN_AS_PTR(noun))
+//XXX: cell->tagged_cell ; cell_base->cell ; assert non-nursery on calls 
+//XXX: to query metainfo (have inline call noun_get_metainfo w/ ASSERT
+#define NOUN_AS_NOUN_METAINFO(noun) ((noun_metainfo_t *)NOUN_AS_PTR(noun))
 #define CELL_AS_NOUN(cell) ((noun_t){ .value = (satom_t)(cell) | \
   NOUN_CELL_FLAG | NOUN_NOT_SATOM_FLAG })
 #define NOUN_EQUALS(n1, n2) ((n1).value == (n2).value)
@@ -216,50 +258,64 @@ typedef struct machine {
 #define SATOM_MAX (((satom_t)SATOM_T_MAX) >> 1)
 #define SATOM_OVERFLOW_BIT (((satom_t)1) << (sizeof(satom_t)*8-1))
 
+#define _FORWARDED_MARKER BATOM_AS_NOUN((void *)(-1 & ~NOUN_FLAGS))
 #define _UNDEFINED BATOM_AS_NOUN(NULL)
-#define NOUN_AS_CELL(noun) ((cell_t *)NOUN_AS_NOUN_HEADER(noun))
-#define NOUN_AS_BATOM(noun) ((batom_t *)NOUN_AS_NOUN_HEADER(noun))
+#define NOUN_AS_CELL(noun) ((cell_t *)NOUN_AS_NOUN_METAINFO(noun))
+#define NOUN_AS_BATOM(noun) ((batom_t *)NOUN_AS_NOUN_METAINFO(noun))
 #define NOUN_IS_UNDEFINED(noun) NOUN_EQUALS(noun, _UNDEFINED)
-#define NOUN_IS_DEFINED(noun) !NOUN_IS_UNDEFINED(noun)
+#define NOUN_IS_DEFINED(noun) !NOUN_EQUALS(noun, _UNDEFINED)
+#define NOUN_IS_FORWARDED_MARKER(noun) NOUN_EQUALS(noun, _FORWARDED_MARKER)
 #if ARKHAM_URC
 #if ARKHAM_ASSERT
-#define CELLS(count) cell_t *cellp[1]; int _requested = count; \
-  cell_t *_first = cellp[0] = heap_alloc_cells(heap, count)
+#define CELLS(count) \
+  cell_t *cellp[1]; \
+  int _requested = count; \
+  bool possible_data_motion = false; \
+  cellp[0] = heap_alloc_cells(heap, count, &possible_data_motion); \
+  cell_t *_first = cellp[0]
+#define DATA_MOVED() possible_data_motion
 #define CELLS_ARG cellp
 #define CELLS_DECL cell_t *cellp[1]
-#define CELL(left, right) cell_new(&(cellp[0]), left, right)
+#define CELL(left, right) CELL_AS_NOUN(cell_new_nursery(&(cellp[0]), \
+  left, right))
 #define END_CELLS() ASSERT(_requested == (cellp[0] - _first), \
   "Wrong number of allocations\n");
 #else /* #if !ARKHAM_ASSERT */
-#define CELLS(count) cell_t *cellp[1]; cellp[0] = heap_alloc_cells(heap, count)
+#define CELLS(count) \
+  cell_t *cellp[1]; \
+  bool possible_data_motion = false; \
+  cellp[0] = heap_alloc_cells(heap, count, &possible_data_motion);
+#define DATA_MOVED() possible_data_motion
 #define CELLS_ARG cellp
 #define CELLS_DECL cell_t *cellp[1]
-#define CELL(left, right) cell_new(&(cellp[0]), left, right)
+#define CELL(left, right) CELL_AS_NOUN(cell_new_nursery(&(cellp[0]), \
+  left, right))
 #define END_CELLS() do { } while (false)
 #endif /* #if ARKHAM_ASSERT */
 #else /* #if !ARKHAM_URC */
-#define CELLS(count) do { } while(false)
+#define CELLS(count) do { } while (false)
+#define DATA_MOVED() false
 #define CELLS_ARG NULL
 #define CELLS_DECL void *cellp
-#define CELL(left, right) cell_new(heap, left, right)
+#define CELL(left, right) CELL_AS_NOUN(cell_new(heap, left, right))
 #define END_CELLS() do { } while (false)
 #endif /* #if ARKHAM_URC */
 
 /* Owners from the "root set": */
 /* For the stack */
-#define STACK_OWNER ((noun_header_t *)1)
+#define STACK_OWNER ((noun_metainfo_t *)1)
 /* For interpreter locals */
-#define ROOT_OWNER ((noun_header_t *)2)
+#define ROOT_OWNER ((noun_metainfo_t *)2)
 /* Special for the "cond" function */
-#define COND2_OWNER ((noun_header_t *)3)
+#define COND2_OWNER ((noun_metainfo_t *)3)
 /* For static variables */
-#define HEAP_OWNER ((noun_header_t *)4)
+#define HEAP_OWNER ((noun_metainfo_t *)4)
 /* For the environment during compilation */
-#define ENV_OWNER ((noun_header_t *)5)
+#define ENV_OWNER ((noun_metainfo_t *)5)
 /* For the AST during compilation */
-#define AST_OWNER ((noun_header_t *)6)
+#define AST_OWNER ((noun_metainfo_t *)6)
 /* For the local variables during abstract interpretation */
-#define LOCALS_OWNER ((noun_header_t *)7)
+#define LOCALS_OWNER ((noun_metainfo_t *)7)
 
 #if NO_SATOMS
 extern noun_t _UNDEFINED;
@@ -341,28 +397,35 @@ noun_as_cell(noun_t noun) {
 static inline noun_t
 noun_get_left(noun_t noun) {
   ASSERT0(noun_get_type(noun) == cell_type);
-  return noun_as_cell(noun)->left;
+  return noun_as_cell(noun)->base.left;
 }
 
 static inline noun_t
 noun_get_right(noun_t noun) {
   ASSERT0(noun_get_type(noun) == cell_type);
-  return noun_as_cell(noun)->right;
+  return noun_as_cell(noun)->base.right;
 }
 
 noun_t cell_set_left(noun_t noun, noun_t left, heap_t *heap);
 
 noun_t cell_set_right(noun_t noun, noun_t left, heap_t *heap);
 
-void noun_print(FILE *file, noun_t noun, bool brackets);
+Fnv_t noun_hash(noun_t noun, Fnv_t hash);
+
+void noun_print(FILE *file, noun_t noun, bool brackets, bool metainfo);
+
+#if ALLOC_DEBUG
+void noun_metainfo_print_metainfo(FILE *file, const char *prefix,
+  noun_metainfo_t *noun_metainfo, const char *suffix);
+#endif
 
 const char *noun_type_to_string(enum noun_type noun_type);
 
 #if ARKHAM_URC
-noun_t cell_new(struct cell **cellp, noun_t left, noun_t right);
-#else /* #if !ARKHAM_URC */
-noun_t cell_new(heap_t *heap, noun_t left, noun_t right);
-#endif /* #if ARKHAM_URC */
+cell_t *cell_new_nursery(struct cell **cellp, noun_t left, noun_t right);
+#endif
+
+cell_t *cell_new(heap_t *heap, noun_t left, noun_t right);
 
 bool noun_is_valid_atom(noun_t noun, heap_t *heap);
 
@@ -377,9 +440,10 @@ noun_t batom_new(heap_t *heap, mpz_t val, bool clear);
 noun_t batom_new_ui(heap_t *heap, unsigned long val);
 
 #if ALLOC_DEBUG
-noun_t noun_share(noun_t noun, heap_t *heap, noun_header_t *owner);
+noun_t noun_share(noun_t noun, heap_t *heap, noun_metainfo_t *owner);
 
-void noun_unshare(noun_t noun, heap_t *heap, bool toplevel, noun_header_t *owner);
+void noun_unshare(noun_t noun, heap_t *heap, bool toplevel,
+  noun_metainfo_t *owner);
 #else
 noun_t noun_share(noun_t noun, heap_t *heap);
 
@@ -393,12 +457,14 @@ void heap_alloc_cells_stats(heap_t *heap, int count);
 void collect_garbage(size_t size);
 
 static inline char *
-heap_alloc(heap_t *heap, size_t size) {
+heap_alloc(heap_t *heap, size_t size, bool *possible_data_motion) {
   char *chunk;
 
 #if ARKHAM_URC
   char *nursery_next = heap->nursery_current + size;
   if (nursery_next > heap->nursery_end) {
+    if (possible_data_motion != NULL)
+      *possible_data_motion = true;
     collect_garbage(size);
     nursery_next = heap->nursery_current + size;
   }
@@ -412,10 +478,11 @@ heap_alloc(heap_t *heap, size_t size) {
 }
 
 static inline cell_t *
-heap_alloc_cells(heap_t *heap, int count) {
-  cell_t *cell = (cell_t *)heap_alloc(heap, count * sizeof(cell_t));
+heap_alloc_cells(heap_t *heap, int count, bool *possible_data_motion) {
+  cell_t *cell = (cell_t *)heap_alloc(heap, count * sizeof(cell_t),
+                                      possible_data_motion);
 
-#if ARKHAM_STATS
+#if ARKHAM_STATS && !ARKHAM_URC
   heap_alloc_cells_stats(heap, count);
 #endif
 

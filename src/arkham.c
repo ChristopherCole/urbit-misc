@@ -78,6 +78,10 @@ typedef struct {
   FILE *file;
 } infile_t;
 
+#if ARKHAM_USE_NURSERY
+static bool heap_is_nursery(heap_t *heap, void *ptr);
+#endif
+
 void
 arkham_log(const char *format, ...) {
   va_list args;
@@ -204,6 +208,11 @@ noun_metainfo_print_metainfo(FILE *file, const char *prefix,
     fprintf(file, "%sCOND2%s", prefix, suffix);
   else if (noun_metainfo == HEAP_OWNER)
     fprintf(file, "%sHEAP%s", prefix, suffix);
+#if ARKHAM_USE_NURSERY
+  else if (heap_is_nursery(machine_get()->heap,
+                           (char *)noun_metainfo) + sizeof(noun_metainfo_t))
+    fprintf(file, "%s<N>%s", prefix, suffix);
+#endif
   else if (noun_metainfo_get_refs(noun_metainfo) == ALLOC_FREE_MARKER)
     fprintf(file, "%s{id=%" SATOM_FMT ",rc->0}%s", prefix, noun_metainfo->id,
             suffix);
@@ -251,12 +260,18 @@ noun_metainfo_add_owner(noun_metainfo_t *noun_metainfo, noun_metainfo_t *owner) 
       return;
     }
   }
-  noun_metainfo_print_metainfo(stdout, "noun: ", noun_metainfo, "\n");//XXX: stdout
-  for (int i = 0; i < OWNERS_SIZE; ++i) {
-    if (noun_metainfo->owners[i] != NULL)
-      noun_metainfo_print_metainfo(stdout, "noun owner: ", noun_metainfo->owners[i], "\n");//XXX: stdout
+
+  if (false) {
+    FILE *out_file = machine_get()->out_file;
+    noun_metainfo_print_metainfo(out_file, "noun: ", noun_metainfo, "\n");
+    for (int i = 0; i < OWNERS_SIZE; ++i) {
+      if (noun_metainfo->owners[i] != NULL)
+        noun_metainfo_print_metainfo(out_file, "noun owner: ",
+                                     noun_metainfo->owners[i], "\n");
+    }
+    noun_metainfo_print_metainfo(out_file, "owner: ", owner, "\n");
   }
-  noun_metainfo_print_metainfo(stdout, "owner: ", owner, "\n");//XXX: stdout
+
   ASSERT(false, "Couldn't add owner\n");
 }
 
@@ -268,12 +283,18 @@ noun_metainfo_remove_owner(noun_metainfo_t *noun_metainfo, noun_metainfo_t *owne
       return;
     }
   }
-  noun_metainfo_print_metainfo(stdout, "noun: ", noun_metainfo, "\n");//XXX: stdout
-  for (int i = 0; i < OWNERS_SIZE; ++i) {
-    if (noun_metainfo->owners[i] != NULL)
-      noun_metainfo_print_metainfo(stdout, "noun owner: ", noun_metainfo->owners[i], "\n");//XXX: stdout
+
+  if (false) {
+    FILE *out_file = machine_get()->out_file;
+    noun_metainfo_print_metainfo(out_file, "noun: ", noun_metainfo, "\n");
+    for (int i = 0; i < OWNERS_SIZE; ++i) {
+      if (noun_metainfo->owners[i] != NULL)
+        noun_metainfo_print_metainfo(out_file, "noun owner: ",
+                                     noun_metainfo->owners[i], "\n");
+    }
+    noun_metainfo_print_metainfo(out_file, "owner: ", owner, "\n");
   }
-  noun_metainfo_print_metainfo(stdout, "owner: ", owner, "\n");//XXX: stdout
+
   ASSERT(false, "Couldn't remove owner\n");
 }
 #endif /* #if ALLOC_DEBUG */
@@ -287,6 +308,13 @@ noun_type_to_string(enum noun_type noun_type)
   case batom_type: return "cell_batom";
   }
 }
+
+#if ARKHAM_USE_NURSERY
+static bool
+heap_is_nursery(heap_t *heap, void *ptr) {
+  return (char*)ptr >= heap->nursery_start && (char*)ptr < heap->nursery_end;
+}
+#endif
 
 static void
 heap_print_stats(heap_t *heap, FILE *file) {
@@ -356,8 +384,8 @@ heap_print_stats(heap_t *heap, FILE *file) {
 }
 
 #if ARKHAM_USE_NURSERY
-#define NURSERY_SIZE (512)
-#define WRITE_LOG_SIZE (512 * 1024 * 1024)
+#define NURSERY_SIZE (1 * 1024 * 1024)
+#define WRITE_LOG_SIZE (1 * 1024 * 1024)
 #endif
 
 #define ALIGN(s1, s2) ((((s1)+(s2)-1)/(s2))*(s2))
@@ -380,7 +408,7 @@ heap_new() {
 #if ARKHAM_USE_NURSERY
   heap->nursery_start = ((char *)heap) + heap_size;
   heap->nursery_current = heap->nursery_start;
-  heap->nursery_end = ((char *)heap) + NURSERY_SIZE;
+  heap->nursery_end = heap->nursery_start + NURSERY_SIZE;
 
   heap->write_log_start = (write_log_t *)heap->nursery_end;
   heap->write_log_current = heap->write_log_start;
@@ -434,13 +462,6 @@ heap_register_debug(heap_t *heap, noun_metainfo_t *noun_metainfo,
   heap->last = noun_metainfo;
 }
 #endif /* #if ALLOC_DEBUG */
-
-#if ARKHAM_USE_NURSERY
-static bool
-heap_is_nursery(heap_t *heap, void *ptr) {
-  return (char*)ptr >= heap->nursery_start && (char*)ptr < heap->nursery_end;
-}
-#endif
 
 #if ARKHAM_USE_NURSERY
 void
@@ -584,22 +605,14 @@ static void roots_build_write_log(machine_t *machine, noun_t *address,
 #if ARKHAM_USE_NURSERY
 void
 collect_garbage(size_t size) {
-  // TODO: add timing and logging
-
-  //XXX: assert size < nursery size
+  // TODO: Add timing and logging
 
   machine_t *machine = machine_get();
   heap_t *heap = machine->heap;
   fstack_t *stack = machine->stack;
 
-  /* do_roots(machine, roots_print, stdout); */
-  /* { //XXX: stdout */
-  /*   Fnv_t hash = FNV1_INIT; */
-  /*   do_roots(machine, roots_hash, &hash); */
-  /*   fprintf(stdout, "roots hash (before): %" SATOM_X_FMT "\n", hash); */
-  /* } */
-
-  /* heap_print_stats(heap, machine->trace_file); */
+  ASSERT(size < heap->nursery_end - heap->nursery_start, 
+         "Requested allocation is too large\n");
 
   do_roots(machine, roots_trace_nursery, NULL);
 
@@ -628,15 +641,6 @@ collect_garbage(size_t size) {
 #if ARKHAM_STATS
   ++heap->gc_count;
 #endif
-
-  /* heap_print_stats(heap, machine->trace_file); */
-
-  /* do_roots(machine, roots_print, stdout); */
-  /* { //XXX: stdout */
-  /*   Fnv_t hash = FNV1_INIT; */
-  /*   do_roots(machine, roots_hash, &hash); */
-  /*   fprintf(stdout, "roots hash (after): %" SATOM_X_FMT "\n", hash); */
-  /* } */
 }
 #endif /* #if ARKHAM_USE_NURSERY */
 
@@ -1405,15 +1409,12 @@ trace_parse_stack(machine_t *machine, do_roots_fn_t fn, void *data,
   vec_t *vec = (vec_t *)extra_data;
   size_t size = vec_size(vec);
   for (int i = 0; i < size; ++i) {
-    printf("i=%d, addr=%p\n", i, vec_get(vec, i));//XXX
     fn(machine, (noun_t *)vec_get(vec, i), STACK_OWNER, data);
   }
 }
 #endif
 
 static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
-  printf("enter parse\n");//XXX
-
   heap_t *heap = machine->heap;
   vec_t token;
   vec_init(&token, sizeof(char));
@@ -1539,15 +1540,6 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
  done:
 
   roots_hook_remove(handle);
-
-  printf("exit parse\n");//XXX
-
-  do_roots(machine, roots_print, stdout);
-  { //XXX: stdout
-    Fnv_t hash = FNV1_INIT;
-    do_roots(machine, roots_hash, &hash);
-    fprintf(stdout, "roots hash (before): %" SATOM_X_FMT "\n", hash);
-  }
 
   return result;
 }
@@ -1780,23 +1772,28 @@ static fn_ret_t cond1(machine_t *machine, root_t *root) {
   return (fn_ret_t){ .root = next_root, .op = nock_op };
 }
 
-void booga() { } // XXX
-
 static inline void inc_ops(machine_t *machine) { 
-#if ARKHAM_OP_TRACE
-  if (true)
+  if (false)
     do_roots(machine, roots_print, machine->trace_file);
+
+  if (false)
+    heap_print_stats(machine->heap, machine->trace_file);
+
+#if ARKHAM_OP_TRACE
   Fnv_t hash = FNV1_INIT;
   do_roots(machine, roots_hash, &hash);
   fprintf(machine->trace_file, "op=%09lu hash=%016" SATOM_X_FMT "\n",
           machine->ops, hash);
-  if (true)
-    heap_print_stats(machine->heap, machine->trace_file);
-  if (machine->ops == 5)
-    booga();
 #endif
-  do_roots(machine, roots_sanity, NULL);//XXX
+
+#if ALLOC_DEBUG
+  do_roots(machine, roots_sanity, NULL);
+#endif
+
 #if ARKHAM_STATS
+  if (false)
+    fprintf(machine->out_file, "op=%09lu\n", machine->ops);
+
   ++machine->ops;
 #endif
 }

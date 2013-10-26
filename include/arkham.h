@@ -470,6 +470,7 @@ heap_alloc(heap_t *heap, size_t size, bool *possible_data_motion) {
   }
   chunk = heap->nursery_current;
   heap->nursery_current = nursery_next;
+  ASSERT0(heap->nursery_current <= heap->nursery_end);
 #else /* #if !ARKHAM_USE_NURSERY */
   chunk = (cell_t *)calloc(1, size);
 #endif /* #if ARKHAM_USE_NURSERY */

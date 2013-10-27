@@ -384,8 +384,8 @@ heap_print_stats(heap_t *heap, FILE *file) {
 }
 
 #if ARKHAM_USE_NURSERY
-#define NURSERY_SIZE (1 * 1024 * 1024)
-#define WRITE_LOG_SIZE (1 * 1024 * 1024)
+#define NURSERY_SIZE (64 * 1024)
+#define WRITE_LOG_SIZE (64 * 1024)
 #endif
 
 #define ALIGN(s1, s2) ((((s1)+(s2)-1)/(s2))*(s2))

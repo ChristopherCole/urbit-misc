@@ -60,4 +60,4 @@ clean:
 	rm -rf build
 
 test:
-	time (build/bin/arkham - < tests/dec400000.nock)
+	time (build/bin/arkham - < tests/dec4000000.nock)

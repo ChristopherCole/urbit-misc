@@ -50,6 +50,10 @@ using namespace llvm;
 
 #include "arkham.h"
 
+#define L(noun) noun_get_left(noun)
+#define R(noun) noun_get_right(noun)
+#define T(noun) noun_get_type(noun)
+
 #define ENV_FAIL(env, pstr, msg) env->fail(pstr, msg, __FILE__, __FUNCTION__, \
   __LINE__);
 #define ENV_CHECK_VOID(env, p, msg) do { \
@@ -329,6 +333,8 @@ namespace jit {
 #if ARKHAM_LLVM
       virtual Value *compile(Environment *env) = 0;
 #endif
+
+      virtual bool is_expr() { return true; }
 
       // REVISIT: source information: file, line, column
     };
@@ -1027,6 +1033,8 @@ namespace jit {
         delete inner;
       }
 
+      bool is_expr() { return true; }
+
       void dump(Environment *env, FILE *fp, int indent) {
         if (env->failed) return;
         env->indent(fp, indent); 
@@ -1582,6 +1590,153 @@ namespace jit {
 } // namespace jit
 
 using namespace jit::ast;
+
+Node *compile(noun_t rt);
+
+Node *compile_decl(noun_t rt) {
+  Node *inner = compile(R(rt));
+
+  if (inner != NULL) {
+    Declaration *decl = new Declaration(R(L(rt)));
+    decl->set_inner(inner);
+    return decl;
+  }
+
+  return NULL;
+}
+
+Node *compile_simple_loop(noun_t rt) {
+  noun_t l = L(rt);
+  noun_t r = R(rt);
+  noun_t rl = L(l);
+
+  Node *test = compile(rl);
+  Node *yes = NULL;
+  Node *no = NULL;
+
+  if (test != NULL && test->is_expr()) {
+      noun_t rr = R(r);
+      yes = compile(L(rr));
+
+      if (yes != NULL && yes->is_expr()) {
+        no = compile(R(rr));
+
+        if (no != NULL) {
+          Loop *loop = new Loop();
+
+          loop->set_test(dynamic_cast<Expression *>(test));
+
+          // Assume that yes is "return" and that no is "continue".
+
+          // REVISIT: Reverse the sense of the test is yes is "continue"
+          // and no is "return".
+
+          loop->set_result(dynamic_cast<Expression *>(yes));
+          //XXXX: stores...
+
+          return loop;
+        }
+      }
+  }
+
+ error:
+
+  if (test != NULL) delete test;
+  if (yes != NULL) delete yes;
+  if (no != NULL) delete no;
+
+  return NULL;
+}
+
+Node *compile_load(noun_t rt) {
+  if (NOUN_IS_SATOM(rt)) 
+    return new Load(NOUN_AS_SATOM(rt));
+  else
+    return NULL;
+}
+
+Node *compile_inc(noun_t rt) {
+  Node *sub = compile(rt);
+
+  if (sub != NULL && sub->is_expr()) {
+    IncrementExpression *inc = new IncrementExpression();
+    inc->set_subexpr(dynamic_cast<Expression *>(sub));
+    return inc;
+  }
+
+  return NULL;
+}
+
+Node *compile_binop(noun_t rt, enum binop_type type) {
+  Node *left = compile(L(rt));
+  Node *right = NULL;
+
+  if (left != NULL && left->is_expr()) {
+    Node *right = compile(L(rt));
+
+    if (right != NULL && right->is_expr()) {
+      BinaryExpression *binop = new BinaryExpression(type);
+
+      binop->set_left(dynamic_cast<Expression *>(left));
+      binop->set_right(dynamic_cast<Expression *>(right));
+
+      return binop;
+    }
+  }
+
+ error:
+
+  if (left != NULL) delete left;
+  if (right != NULL) delete right;
+
+  return NULL;
+}
+
+Node *compile_iterate(noun_t rt) {
+  //XXXX: stores?
+
+  return NULL;
+}
+
+Node *compile(noun_t rt) {
+  heap_t *heap = machine->heap;
+  
+  if (NOUN_IS_CELL(rt)) {
+    noun_t l = L(rt);
+    if (NOUN_IS_SATOM(l)) {
+      noun_t r = R(rt);
+      switch (NOUN_AS_SATOM(l)) {
+      case 4:
+        return compile_inc(r);
+      case 5:
+        return compile_binop(r, binop_eq_type);
+      case 8:
+        if (NOUN_IS_CELL(r)) {
+          noun_t rl = L(r);
+          
+          if (NOUN_IS_CELL(rl)) {
+            if (NOUN_EQUALS(L(rl), _1)) {
+              noun_t rr = R(r);
+              noun_t i = rr;
+              
+              if (NOUN_EQUALS(L(i), _9) && NOUN_EQUALS(L(i = R(i)), _2) &&
+                  NOUN_EQUALS(L(i = R(i)), _0) &&
+                  NOUN_EQUALS(L(i = R(i)), _1)) {
+                return compile_simple_loop(R(rl));
+              } else {
+                return compile_decl(r);
+              }
+            }
+          }
+        }
+      case 9:
+        return compile_iterate(r);
+      }
+    }
+  }
+
+  return NULL;
+}
 
 Node *dec_ast(Environment *env) {
   heap_t *heap = machine->heap;

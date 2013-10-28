@@ -334,8 +334,6 @@ namespace jit {
       virtual Value *compile(Environment *env) = 0;
 #endif
 
-      virtual bool is_expr() { return true; }
-
       // REVISIT: source information: file, line, column
     };
 
@@ -1033,8 +1031,6 @@ namespace jit {
         delete inner;
       }
 
-      bool is_expr() { return true; }
-
       void dump(Environment *env, FILE *fp, int indent) {
         if (env->failed) return;
         env->indent(fp, indent); 
@@ -1425,11 +1421,71 @@ namespace jit {
       }
     }; // class Store
 
+    class Iteration : public Expression {
+      /* protected */ public:
+      std::vector<Store *> stores;
+
+    public:
+      ~Iteration() {
+        for(std::vector<Store *>::iterator it = stores.begin();
+            it != stores.end(); ++it)
+          delete *it;
+      }
+
+      void dump(Environment *env, FILE *fp, int indent) {
+        if (env->failed) return;
+
+        for(std::vector<Store *>::iterator it = stores.begin();
+            it != stores.end(); ++it) {
+          if (it != stores.begin())
+            fprintf(fp, ", ");
+          (*it)->dump(env, fp, -1);
+        }
+      }
+
+      void prep(Environment *env) {
+        if (env->failed) return;
+
+        for(std::vector<Store *>::iterator it = stores.begin();
+            it != stores.end(); ++it)
+          (*it)->prep(env);
+      }
+
+      void eval(Environment *env) {
+        if (env->failed) return;
+
+        for(std::vector<Store *>::iterator it = stores.begin();
+            it != stores.end(); ++it)
+          (*it)->eval(env);
+        // Copy the locals for the next iteration:
+        env->copy_locals();
+      }
+
+#if ARKHAM_LLVM
+      Value *compile(Environment *env) {
+        {
+          for(std::vector<Store *>::iterator it = stores.begin();
+              it != stores.end(); ++it)
+            (*it)->compile(env);
+        }
+        {
+          for(std::vector<Store *>::iterator it = stores.begin();
+              it != stores.end(); ++it)
+            (*it)->compile_copy(env);
+        }
+      }
+#endif /* ARKHAM_LLVM */
+
+      void add_store(Store *store) {
+        stores.push_back(store);
+      }
+    }; // class Iteration
+
     class Loop : public Expression {
       /* protected */ public:
       Expression *test;
       Expression *result;
-      std::vector<Store *> stores;
+      Iteration *iteration;
 
     public:
       ~Loop() {
@@ -1437,10 +1493,8 @@ namespace jit {
           delete test;
         if (result != NULL)
           delete result;
-  
-        for(std::vector<Store *>::iterator it = stores.begin();
-            it != stores.end(); ++it)
-          delete *it;
+        if (iteration != NULL)
+          delete iteration;
       }
 
       void dump(Environment *env, FILE *fp, int indent) {
@@ -1453,12 +1507,7 @@ namespace jit {
         env->indent(fp, indent + 1); fprintf(fp, "do(\n");
         env->indent(fp, indent + 2); 
 
-        for(std::vector<Store *>::iterator it = stores.begin();
-            it != stores.end(); ++it) {
-          if (it != stores.begin())
-            fprintf(fp, ", ");
-          (*it)->dump(env, fp, -1);
-        }
+        iteration->dump(env, fp, indent);
 
         fprintf(fp, "\n"); env->indent(fp, indent + 1); fprintf(fp, ")\n");
         env->indent(fp, indent + 1); fprintf(fp, "done(\n");
@@ -1481,9 +1530,7 @@ namespace jit {
 
         --env->current_stack_index;
 
-        for(std::vector<Store *>::iterator it = stores.begin();
-            it != stores.end(); ++it)
-          (*it)->prep(env);
+        iteration->prep(env);
       }
 
       void eval(Environment *env) {
@@ -1496,16 +1543,10 @@ namespace jit {
           bool is_eq = NOUN_EQUALS(env->get_stack(stack_index), _YES);
           env->set_stack(stack_index, _UNDEFINED);
 
-          if (is_eq) {
+          if (is_eq)
             result->eval(env);
-            return;
-          } else {
-            for(std::vector<Store *>::iterator it = stores.begin();
-                it != stores.end(); ++it)
-              (*it)->eval(env);
-            // Copy the locals for the next iteration:
-            env->copy_locals();
-          }
+          else
+            iteration->eval(env);
         }
       }
 
@@ -1548,16 +1589,9 @@ namespace jit {
         // Next block.
         env->function->getBasicBlockList().push_back(next_block);
         env->builder->SetInsertPoint(next_block);
-        {
-          for(std::vector<Store *>::iterator it = stores.begin();
-              it != stores.end(); ++it)
-            (*it)->compile(env);
-        }
-        {
-          for(std::vector<Store *>::iterator it = stores.begin();
-              it != stores.end(); ++it)
-            (*it)->compile_copy(env);
-        }
+
+        iteration->compile(env);
+
         env->builder->CreateBr(test_block);
         next_block = env->builder->GetInsertBlock();
         test_phi->addIncoming(LLVM_NOUN(_0), next_block);
@@ -1582,8 +1616,10 @@ namespace jit {
         result->outer = this;
       }
 
-      void add_store(Store *store) {
-        stores.push_back(store);
+      void set_iteration(Iteration *iteration) {
+        ASSERT(this->iteration == NULL, "this->iteration == NULL\n");
+        this->iteration = iteration;
+        iteration->outer = this;
       }
     }; // class Loop
   } // namespace ast
@@ -1614,25 +1650,27 @@ Node *compile_simple_loop(noun_t rt) {
   Node *yes = NULL;
   Node *no = NULL;
 
-  if (test != NULL && test->is_expr()) {
+  Expression *test_expr = dynamic_cast<Expression *>(test);
+  if (test_expr != NULL) {
       noun_t rr = R(r);
       yes = compile(L(rr));
 
-      if (yes != NULL && yes->is_expr()) {
+      Expression *yes_expr = dynamic_cast<Expression *>(yes);
+      if (yes != NULL) {
         no = compile(R(rr));
 
+        Iteration *no_iter = dynamic_cast<Iteration *>(no);
         if (no != NULL) {
           Loop *loop = new Loop();
-
-          loop->set_test(dynamic_cast<Expression *>(test));
 
           // Assume that yes is "return" and that no is "continue".
 
           // REVISIT: Reverse the sense of the test is yes is "continue"
           // and no is "return".
 
-          loop->set_result(dynamic_cast<Expression *>(yes));
-          //XXXX: stores...
+          loop->set_test(test_expr);
+          loop->set_result(yes_expr);
+          loop->set_iteration(no_iter);
 
           return loop;
         }
@@ -1658,9 +1696,10 @@ Node *compile_load(noun_t rt) {
 Node *compile_inc(noun_t rt) {
   Node *sub = compile(rt);
 
-  if (sub != NULL && sub->is_expr()) {
+  Expression *sub_expr = dynamic_cast<Expression *>(sub);
+  if (sub_expr != NULL) {
     IncrementExpression *inc = new IncrementExpression();
-    inc->set_subexpr(dynamic_cast<Expression *>(sub));
+    inc->set_subexpr(sub_expr);
     return inc;
   }
 
@@ -1671,14 +1710,16 @@ Node *compile_binop(noun_t rt, enum binop_type type) {
   Node *left = compile(L(rt));
   Node *right = NULL;
 
-  if (left != NULL && left->is_expr()) {
+  Expression *left_expr = dynamic_cast<Expression *>(left);
+  if (left != NULL) {
     Node *right = compile(L(rt));
 
-    if (right != NULL && right->is_expr()) {
+    Expression *right_expr = dynamic_cast<Expression *>(right);
+    if (right != NULL) {
       BinaryExpression *binop = new BinaryExpression(type);
 
-      binop->set_left(dynamic_cast<Expression *>(left));
-      binop->set_right(dynamic_cast<Expression *>(right));
+      binop->set_left(left_expr);
+      binop->set_right(right_expr);
 
       return binop;
     }
@@ -1692,8 +1733,20 @@ Node *compile_binop(noun_t rt, enum binop_type type) {
   return NULL;
 }
 
-Node *compile_iterate(noun_t rt) {
+Node *compile_stores(noun_t rt) {
   //XXXX: stores?
+  return NULL;
+}
+
+Node *compile_iter(noun_t rt) {
+  if (NOUN_EQUALS(L(rt), _2)) {
+    noun_t r = R(rt);
+    noun_t rl = L(r);
+
+    if (NOUN_IS_CELL(rl) && NOUN_EQUALS(L(rl), _2) && NOUN_EQUALS(R(rl), _0)) {
+      compile_stores(R(r));
+    }
+  }
 
   return NULL;
 }
@@ -1730,7 +1783,7 @@ Node *compile(noun_t rt) {
           }
         }
       case 9:
-        return compile_iterate(r);
+        return compile_iter(r);
       }
     }
   }
@@ -1759,19 +1812,22 @@ Node *dec_ast(Environment *env) {
       Load *result = new Load(6);
       /**/ loop->set_result(result);
     } {
-      Store *store_6 = new Store(6);
-      /**/ loop->add_store(store_6); {
-        IncrementExpression *inc_6 = new IncrementExpression();
-        /**/ store_6->set_subexpr(inc_6); {
-          Load *load_6 = new Load(6);
-          /**/ inc_6->set_subexpr(load_6);
+      Iteration *iteration = new Iteration();
+      /**/ loop->set_iteration(iteration); {
+        Store *store_6 = new Store(6);
+        /**/ iteration->add_store(store_6); {
+          IncrementExpression *inc_6 = new IncrementExpression();
+          /**/ store_6->set_subexpr(inc_6); {
+            Load *load_6 = new Load(6);
+            /**/ inc_6->set_subexpr(load_6);
+          }
         }
-      }
-    } {
-      Store *store_7 = new Store(7);
-      /**/ loop->add_store(store_7); {
-        Load *load_7 = new Load(7);
-        /**/ store_7->set_subexpr(load_7);
+      } {
+        Store *store_7 = new Store(7);
+        /**/ iteration->add_store(store_7); {
+          Load *load_7 = new Load(7);
+          /**/ store_7->set_subexpr(load_7);
+        }
       }
     }
   }
@@ -1800,31 +1856,34 @@ Node *fib_ast(Environment *env) {
         Load *result = new Load(28);
         /**/ loop->set_result(result);
       } {
-        Store *store_6 = new Store(6);
-        /**/ loop->add_store(store_6);
-        IncrementExpression *inc_6 = new IncrementExpression();
-        /**/ store_6->set_subexpr(inc_6);
-        Load *load_6 = new Load(6);
-        /**/ inc_6->set_subexpr(load_6);
-      } {
-        Store *store_28 = new Store(28);
-        /**/ loop->add_store(store_28);
-        Load *load_29 = new Load(29);
-        /**/ store_28->set_subexpr(load_29);
-      } {
-        Store *store_29 = new Store(29);
-        /**/ loop->add_store(store_29);
-        BinaryExpression *add = new BinaryExpression(binop_add_type);
-        /**/ store_29->set_subexpr(add);
-        Load *add_left = new Load(28);
-        /**/ add->set_left(add_left);
-        Load *add_right = new Load(29);
-        /**/ add->set_right(add_right);
-      } {
-        Store *store_15 = new Store(15);
-        /**/ loop->add_store(store_15);
-        Load *load_15 = new Load(15);
-        /**/ store_15->set_subexpr(load_15);
+        Iteration *iteration = new Iteration();
+        /**/ loop->set_iteration(iteration); {
+          Store *store_6 = new Store(6);
+          /**/ iteration->add_store(store_6);
+          IncrementExpression *inc_6 = new IncrementExpression();
+          /**/ store_6->set_subexpr(inc_6);
+          Load *load_6 = new Load(6);
+          /**/ inc_6->set_subexpr(load_6);
+        } {
+          Store *store_28 = new Store(28);
+          /**/ iteration->add_store(store_28);
+          Load *load_29 = new Load(29);
+          /**/ store_28->set_subexpr(load_29);
+        } {
+          Store *store_29 = new Store(29);
+          /**/ iteration->add_store(store_29);
+          BinaryExpression *add = new BinaryExpression(binop_add_type);
+          /**/ store_29->set_subexpr(add);
+          Load *add_left = new Load(28);
+          /**/ add->set_left(add_left);
+          Load *add_right = new Load(29);
+          /**/ add->set_right(add_right);
+        } {
+          Store *store_15 = new Store(15);
+          /**/ iteration->add_store(store_15);
+          Load *load_15 = new Load(15);
+          /**/ store_15->set_subexpr(load_15);
+        }
       }
     }
   }

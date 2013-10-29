@@ -490,9 +490,21 @@ heap_alloc_cells(heap_t *heap, int count, bool *possible_data_motion) {
   return cell;
 }
 
+typedef void (*do_roots_fn_t)(machine_t *machine, noun_t *address,
+                              noun_metainfo_t *owner, void *data);
+
+typedef void (*roots_hook_fn_t)(struct machine *machine,
+                                do_roots_fn_t fn, void *data, void *extra_data);
+
 root_t *root_new(heap_t *heap, noun_t noun);
 
 void root_delete(heap_t *heap, root_t *root);
+
+noun_t accelerate(noun_t subject, noun_t formula, noun_t hint);
+
+void *roots_hook_add(roots_hook_fn_t fn, void *data);
+
+void roots_hook_remove(void *roots_hook_handle);
 
 typedef struct vec_s {
   size_t elem_count;
@@ -528,6 +540,7 @@ static inline void *vec_get(vec_t *vec, size_t index) {
 
 static inline void vec_set(vec_t *vec, size_t index, void *elem) {
   ASSERT0(index < vec->elem_count);
+  // REVISIT: special cases for natural sizes?
   memcpy(vec->elems + (vec->elem_size * index), elem, vec->elem_size);
 }
 
@@ -557,7 +570,10 @@ static inline void *vec_pop(vec_t *vec) {
   return result;
 }
 
-noun_t accelerate(noun_t subject, noun_t formula, noun_t hint);
+#if ARKHAM_USE_NURSERY
+void vec_do_roots(machine_t *machine, do_roots_fn_t fn, void *data,
+                  void *extra_data);
+#endif
 
 #ifdef __cplusplus
 }

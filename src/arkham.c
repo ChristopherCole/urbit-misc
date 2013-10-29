@@ -511,12 +511,6 @@ heap_trace_nursery(noun_t *address, noun_metainfo_t *owner, heap_t *heap) {
 }
 #endif /* #if ARKHAM_USE_NURSERY */
 
-typedef void (*do_roots_fn_t)(machine_t *machine, noun_t *address,
-                              noun_metainfo_t *owner, void *data);
-
-typedef void (*roots_hook_fn_t)(struct machine *machine,
-                                do_roots_fn_t fn, void *data, void *extra_data);
-
 static roots_hook_fn_t roots_hook_fn;
 static void *roots_hook_data;
 
@@ -1402,9 +1396,9 @@ stack_pop(fstack_t *stack, bool unshare, heap_t *heap) {
 }
 
 #if ARKHAM_USE_NURSERY
-static void
-trace_parse_stack(machine_t *machine, do_roots_fn_t fn, void *data,
-                  void *extra_data) {
+void
+vec_do_roots(machine_t *machine, do_roots_fn_t fn, void *data,
+             void *extra_data) {
   heap_t *heap = machine->heap;
   vec_t *vec = (vec_t *)extra_data;
   size_t size = vec_size(vec);
@@ -1427,7 +1421,9 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
   bool started = false;
   noun_t result = _UNDEFINED;
 
-  void *handle = roots_hook_add(trace_parse_stack, &stack);
+#if ARKHAM_USE_NURSERY
+  void *roots_hook_handle = roots_hook_add(vec_do_roots, &stack);
+#endif
 
   while (true) {
     int c = fgetc(input->file);
@@ -1539,7 +1535,13 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
 
  done:
 
-  roots_hook_remove(handle);
+#if ARKHAM_USE_NURSERY
+  roots_hook_remove(roots_hook_handle);
+#endif
+
+  vec_destroy(&token);
+  vec_destroy(&stack);
+  vec_destroy(&count);
 
   return result;
 }
@@ -2050,7 +2052,8 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
                     }
                   } else {
                     noun_t l = L(rt);
-                    if (NOUN_IS_UNDEFINED(accelerate(l, R(rr), L(rr)))) {
+                    noun_t result = accelerate(l, R(rr), L(rr));
+                    if (NOUN_IS_UNDEFINED(result)) {
                       CELLS(1);
                       if (DATA_MOVED()) {
                         rt = root->noun; l = L(rt); rr = R(R(rt));
@@ -2058,7 +2061,8 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
                       noun_t nxt = CELL(l, R(rr));
                       END_CELLS();
                       TAIL_CALL(nock_op, nxt);
-                    }
+                    } else
+                      RET(result);
                   }
                 } else CRASH(machine);
               }

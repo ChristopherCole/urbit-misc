@@ -462,61 +462,88 @@ namespace jit {
         return index;
       }
 
-      // An address can be an argument or a declared variable.
+      // Allocate a slot on the stack for an address.
+      // 'address' can represent an argument or a declared variable.
+      // 'address' is a Nock (slash) tree traversal descriptor.
       void allocate_address(jit_address_t address) {
         heap_t *heap = machine->heap;
         ENV_CHECK_VOID(this, address >= 1, "Invalid address");
 
+        // 'depth' is an aid to tree traversal.
+        // It is the length of the traversal (the depth of the tree
+        // along the traversal).
         const int depth = (sizeof(address) * 8 - __builtin_clz(address) - 1);
-        noun_t ancestors[depth];
+        // 'choice' describes the path of the traversal: it remembers
+        // the 'left' versus 'right' decision at each level of the
+        // traversal.
         bool choice[depth];
+        // 'ancestors' are all of the nouns encountered during the traversal.
+        vec_t ancestors;
+        vec_init(&ancestors, sizeof(noun_t));
+        noun_t undef = _UNDEFINED;
+        vec_resize(&ancestors, depth, &undef);
 
-        int ncells = 0;
+#if ARKHAM_USE_NURSERY
+        void *roots_hook_handle = roots_hook_add(vec_do_roots, &ancestors);
+#endif
 
-        // Count the number of cells we'll need:
-        {
-          noun_t noun = local_variable_index_map->noun;
-          satom_t mask = (depth >= 1 ? (1 << (depth - 1)) : 0);
+        // 'local_variable_index_map' is a tree of cells and atoms.
+        // Each leaf addressed by 'address' is an index.
+        // Each index represents a slot on the stack.
 
-          // Run through the bits from left to right:
-          for (int i = 0; i < depth; ++i) {
-            if (NOUN_EQUALS(noun, args_placeholder->noun))
-              ++ncells;
-            
-            choice[i] = (mask & address);
-            noun = choice[i] ? noun_get_right(noun) : noun_get_left(noun);
-            mask = (mask >> 1);
-          }
-        }
-
-        CELLS(ncells);
-
+        // 'noun' starts as the root of the index map.
+        // 'noun' ends as leaf whose values is an stack slot index.
         noun_t noun = local_variable_index_map->noun;
+        // 'mask' is an aid to tree traversal.
+        // It is used to guide the walk of the tree based on 'address'.
+        // 'mask' and 'address' are used to together to determine
+        // whether to 'descend left' or 'descend right'.
         satom_t mask = (depth >= 1 ? (1 << (depth - 1)) : 0);
     
-        // Run through the bits from left to right:
+        // Run through the bits from left to right (and therefore the
+        // tree from root to leaf):
         for (int i = 0; i < depth; ++i) {
           ENV_CHECK_VOID(this, !NOUN_EQUALS(noun, loop_body_placeholder->noun),
                          "Cannot refer to the loop body");
 
+          // Determine if we've allocated this address already. If we
+          // find a placeholder along the path then that means we have
+          // not. It further means that we are looking up an argument
+          // and not a local variable since local variables already
+          // (at this point) all have entries in 'local_variable_index_map'.
           if (NOUN_EQUALS(noun, args_placeholder->noun)) {
+            // We have not allocated this address already.
+            CELLS(1);
             noun = CELL(args_placeholder->noun, args_placeholder->noun);
+            END_CELLS();
 
             if (NOUN_IS_UNDEFINED(args_root->noun)) {
+              // This is the first allocation for any argument.
+              // All subsequent arguments will be rooted at
+              // 'args_root'.
               args_root->noun = noun;
               SHARE(args_root->noun, ENV_OWNER);
             }
           }
     
-          ancestors[i] = noun;
+          // Remember the ancestor for this level:
+          vec_set(&ancestors, i, &noun);
+          // Remember the choice for this level:
           choice[i] = (mask & address);
+          // Update the current noun:
           noun = choice[i] ? noun_get_right(noun) : noun_get_left(noun);
+          // Prepare the mask for the next iteration:
           mask = (mask >> 1);
         }
   
         ENV_CHECK_VOID(this, !NOUN_EQUALS(noun, loop_body_placeholder->noun),
                        "Cannot refer to the loop body");
 
+        // Determine if we've allocated this address already. If we
+        // find a placeholder along the path then that means we have
+        // not. It further means that we are looking up an argument
+        // and not a local variable since local variables already
+        // (at this point) all have entries in 'local_variable_index_map'.
         if (NOUN_EQUALS(noun, args_placeholder->noun)) {
           // This is an undeclared reference, so it must be an
           // argument.  We are fetching an undeclared local variable
@@ -526,25 +553,42 @@ namespace jit {
           noun = satom_as_noun(allocate_local(_UNDEFINED));
 
           if (NOUN_IS_UNDEFINED(args_root->noun)) {
+            // This is the first allocation for any address (either
+            // argument or local variable).  All subsequent arguments
+            // will be rooted at 'args_root'.
             args_root->noun = noun;
             SHARE(args_root->noun, ENV_OWNER);
           }
 
-          noun_t n = noun;
+          // Build a new tree with the placeholder replaced by the 
+          // newly allocated stack slot index.
+          root_t *n = root_new(heap, noun);
           int i;
           for (i = depth - 1; i >= 0; --i) {
+            CELLS(1);
+            noun_t ancestor = *(noun_t *)vec_get(&ancestors, i);
+            // XXX: share and unshare (& on vector destroy)
             if (choice[i])
-              n = cell_set_right(ancestors[i], n, heap); // XXXX
+              n->noun = CELL(L(ancestor), n->noun);
             else
-              n = cell_set_left(ancestors[i], n, heap); // XXXX
-
-            if (NOUN_EQUALS(n, ancestors[i]))
-              break;
+              n->noun = CELL(n->noun, R(ancestor));
+            vec_set(&ancestors, i, &(n->noun));
+            END_CELLS();
           }
 
-          if (i == -1)
-            ASSIGN(local_variable_index_map->noun, n, ENV_OWNER);
+          // If we got to the root of the index map then update 
+          // variable which refers to it.
+            // XXX: share and unshare (& on vector destroy)
+          ASSIGN(local_variable_index_map->noun, n->noun, ENV_OWNER);
+            // XXX: share and unshare (& on vector destroy)
+          root_delete(heap, n);
         }
+
+#if ARKHAM_USE_NURSERY
+        roots_hook_remove(roots_hook_handle);
+#endif
+
+        vec_destroy(&ancestors);
 
         ENV_CHECK_VOID(this, noun_get_type(noun) == satom_type,
                        "Type mismatch");
@@ -813,8 +857,6 @@ namespace jit {
           int i = 0;
           for(std::vector<incoming_t>::iterator it = incoming.begin();
               it != incoming.end(); ++it) {
-            printf("phi->addIncoming: i=%d\n", i);
-            it->value->dump();
             phi->addIncoming(it->value, it->block);
             ++i;
           }
@@ -2053,38 +2095,4 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
 //   }
 
 //   return decl_f0_f1;
-// }
-
-// QQQ: remove
-// void test_jit(noun_t args) {
-//   // For testing, generate the AST that the pattern matcher *would*
-//   // generate when parsing "fib" in Nock:
-
-//   Environment *env = new Environment();
-//   bool do_fib = true;
-//   Node *root = (do_fib ? fib_ast(env) : dec_ast(env));
-  
-//   env->prep(root);
-
-//   root->dump(env, machine->trace_file, 0);
-
-// #if ARKHAM_LLVM
-//   env->compile(root);
-// #endif
-
-//   noun_t result = env->eval_ast(root, args);
-
-//   if (env->failed) 
-//     ERROR0("Evaluation failed\n");
-//   else {
-//     printf("%s(", (do_fib ? "fib" : "dec")); 
-//     noun_print(stdout, args, true, true);
-//     printf(")=");
-//     noun_print(stdout, result, true, true);
-//     printf("\n");
-//     UNSHARE(result, ENV_OWNER);
-//   }
-
-//   delete root;
-//   delete env;
 // }

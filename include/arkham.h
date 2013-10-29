@@ -557,7 +557,7 @@ static inline void *vec_pop(vec_t *vec) {
   return result;
 }
 
-void test_jit(noun_t args); //QQQ
+noun_t accelerate(noun_t subject, noun_t formula, noun_t hint);
 
 #ifdef __cplusplus
 }

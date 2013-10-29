@@ -1544,10 +1544,6 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
   return result;
 }
 
-static void cite(FILE *file, int line, const char *suffix) {
-  fprintf(file, "  ::  #%d%s", line, suffix);
-}
-
 static void trace(machine_t *machine, enum op_t op, noun_t noun) {
   FILE *file = machine->trace_file;
   for (int i = 0; i < stack_size(machine->stack); ++i)
@@ -1557,9 +1553,6 @@ static void trace(machine_t *machine, enum op_t op, noun_t noun) {
 }
 
 #define TRACE(root) if (ARKHAM_TRACE && trace_flag) trace(machine, op, root)
-#define CITE(line) if (ARKHAM_TRACE && trace_flag) cite(file, line, "\n")
-#define CITE_INLINE(line) if (ARKHAM_TRACE && trace_flag) cite(file, line, "")
-#define CITE_END(p) if (ARKHAM_TRACE && trace_flag && (p)) fprintf(file, "\n")
 #define PR(noun) do { \
     fprintf(file, "%s: ", #noun); \
     noun_print(file, noun, true, true); \
@@ -1715,6 +1708,35 @@ static fn_ret_t f27(machine_t *machine, frame_t *frame, root_t *root) {
   return (fn_ret_t){ .root = next_root, .op = nock_op };
 }
 
+static fn_ret_t f28p2(machine_t *machine, frame_t *frame, root_t *root) {
+  TF();
+  heap_t *heap = machine->heap;
+  CELLS(1);
+  noun_t next_root = SHARE(CELL(frame->data, root->noun), ROOT_OWNER);
+  END_CELLS();
+  machine->stack = stack_pop(machine->stack, /* unshare */ true, heap);
+  return (fn_ret_t){ .root = next_root, .op = nock_op };
+}
+
+static fn_ret_t f28p1(machine_t *machine, frame_t *frame, root_t *root) {
+  TF();
+  heap_t *heap = machine->heap;
+  CELLS(2);
+  noun_t next_root = SHARE(CELL(root->noun, CELL(_0, frame->data)), ROOT_OWNER);
+  END_CELLS();
+  frame->fn = f28p2;
+  ASSIGN(frame->data, root->noun, STACK_OWNER);
+  return (fn_ret_t){ .root = next_root, .op = nock_op };
+}
+
+static fn_ret_t f32(machine_t *machine, frame_t *frame, root_t *root) {
+  TF();
+  heap_t *heap = machine->heap;
+  noun_t next_root = SHARE(frame->data, ROOT_OWNER);
+  machine->stack = stack_pop(machine->stack, /* unshare */ true, heap);
+  return (fn_ret_t){ .root = next_root, .op = nock_op };
+}
+
 static fn_ret_t cond2(machine_t *machine, frame_t *frame, root_t *root) {
   TF();
 
@@ -1853,7 +1875,6 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
             if (DATA_MOVED()) {
               rt = root->noun; r = R(rt); rl = L(r);
             }
-            CITE(16);
             noun_t l = L(rt); 
             noun_t nxt1 = CELL(l, CELL(L(rl), R(rl))); 
             noun_t nxt2 = CELL(l, R(r)); 
@@ -1865,7 +1886,6 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
             if (fits) {
               switch (satom) {
               case 0: { 
-                CITE(18);
                 CELLS(1);
                 if (DATA_MOVED()) {
                   rt = root->noun; r = R(rt);
@@ -1875,14 +1895,12 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
                 TAIL_CALL(slash_op, nxt);
               }
               case 1: { 
-                CITE(19);
                 noun_t nxt = R(r);
                 RET(nxt);
               }
               case 2: {
                 noun_t rr = R(r);
                 if (T(rr) == cell_type) { 
-                  CITE(20); 
                   CELLS(2);
                   if (DATA_MOVED()) {
                     rt = root->noun; r = R(rt); rr = R(r);
@@ -1895,7 +1913,6 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
                 } else CRASH(machine);
               }
               case 3: {
-                CITE(21);
                 CELLS(1);
                 if (DATA_MOVED()) {
                   rt = root->noun; r = R(rt);
@@ -1905,7 +1922,6 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
                 CALL0(nock_op, nxt, f21);
               }
               case 4: {
-                CITE(22);
                 CELLS(1);
                 if (DATA_MOVED()) {
                   rt = root->noun; r = R(rt);
@@ -1915,7 +1931,6 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
                 CALL0(nock_op, nxt, f22);
               }
               case 5: {
-                CITE(23);
                 CELLS(1);
                 if (DATA_MOVED()) {
                   rt = root->noun; r = R(rt);
@@ -1925,7 +1940,6 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
                 CALL0(nock_op, nxt, f23);
               }
               case 6: {
-                CITE(25);
                 fn_ret_t fn_ret = cond1(machine, root);
                 op = fn_ret.op;
                 UNSHARE(rt, ROOT_OWNER);
@@ -1935,10 +1949,9 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
               case 7: { 
                 noun_t rr = R(r);
                 if (T(rr) == cell_type) { 
-                  CITE(26); 
                   bool implement_directly = true;
                   if (implement_directly) {
-                    // 7r ::     *[a 7 b c]         *[*[a b] c]
+                    // 7r :: *[a 7 b c] -> *[*[a b] c]
                     CELLS(1);
                     if (DATA_MOVED()) {
                       rt = root->noun; r = R(rt); rr = R(r);
@@ -1962,10 +1975,9 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
               case 8: {
                 noun_t rr = R(r);
                 if (T(rr) == cell_type) { 
-                  CITE(27); 
                   bool implement_directly = true;
                   if (implement_directly) {
-                    // 8r ::     *[a 8 b c]        *[[*[a b] a] c]
+                    // 8r :: *[a 8 b c] -> *[[*[a b] a] c]
                     CELLS(1);
                     if (DATA_MOVED()) {
                       rt = root->noun; rr = R(R(rt));
@@ -1988,42 +2000,66 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
               case 9: {
                 noun_t rr = R(r);
                 if (T(rr) == cell_type) { 
-                  CITE(28); 
-                  // TODO: Implement direct reductions
-                  CELLS(7);
-                  if (DATA_MOVED()) {
-                    rt = root->noun; rr = R(R(rt));
-                  }
-                  noun_t nxt = CELL(L(rt), CELL(_7, CELL(R(rr), CELL(_2,
+                  bool implement_directly = true;
+                  if (implement_directly) {
+                    // 9r :: *[a 9 b c] -> *[*[a c] *[*[a c] 0 b]] 
+                    CELLS(1);
+                    if (DATA_MOVED()) {
+                      rt = root->noun; rr = R(R(rt));
+                    }
+                    noun_t nxt1 = CELL(L(rt), R(rr));
+                    noun_t nxt2 = L(rr);
+                    END_CELLS();
+                    CALL1(nock_op, nxt1, f28p1, nxt2);
+                  } else {
+                    CELLS(7);
+                    if (DATA_MOVED()) {
+                      rt = root->noun; rr = R(R(rt));
+                    }
+                    noun_t nxt = CELL(L(rt), CELL(_7, CELL(R(rr), CELL(_2,
                       CELL(CELL(_0, _1), CELL(_0, L(rr)))))));
-                  END_CELLS(); 
-                  TAIL_CALL(nock_op, nxt);
+                    END_CELLS(); 
+                    TAIL_CALL(nock_op, nxt);
+                  }
                 } else CRASH(machine);
               }
               case 10: {
                 noun_t rr = R(r);
                 if (T(rr) == cell_type) { 
-                  CITE(29); 
                   noun_t rrl = L(rr);
-                  noun_t nxt;
                   if (T(rrl) == cell_type) { 
-                    // TODO: Implement direct reductions
-                    CELLS(6);
-                    if (DATA_MOVED()) {
-                      rt = root->noun; rr = R(R(rt)); rrl = L(rr);
-                    }
-                    nxt = CELL(L(rt), CELL(_8, CELL(R(rrl), CELL(_7,
+                    bool implement_directly = true;
+                    if (implement_directly) {
+                      CELLS(2);
+                      if (DATA_MOVED()) {
+                        rt = root->noun; rr = R(R(rt));
+                      }
+                      noun_t nxt1 = CELL(L(rt), R(L(rr)));
+                      noun_t nxt2 = CELL(L(rt), R(rr));
+                      END_CELLS();
+                      CALL1(nock_op, nxt1, f32, nxt2);
+                    } else {
+                      CELLS(6);
+                      if (DATA_MOVED()) {
+                        rt = root->noun; rr = R(R(rt)); rrl = L(rr);
+                      }
+                      noun_t nxt = CELL(L(rt), CELL(_8, CELL(R(rrl), CELL(_7,
                         CELL(CELL(_0, _2), R(rr))))));
-                    END_CELLS();
-                  } else {
-                    CELLS(1);
-                    if (DATA_MOVED()) {
-                      rt = root->noun; rrl = L(R(R(rt)));
+                      END_CELLS();
+                      TAIL_CALL(nock_op, nxt);
                     }
-                    nxt = CELL(L(rt), rrl);
-                    END_CELLS();
+                  } else {
+                    noun_t l = L(rt);
+                    if (NOUN_IS_UNDEFINED(accelerate(l, R(rr), L(rr)))) {
+                      CELLS(1);
+                      if (DATA_MOVED()) {
+                        rt = root->noun; l = L(rt); rr = R(R(rt));
+                      }
+                      noun_t nxt = CELL(l, R(rr));
+                      END_CELLS();
+                      TAIL_CALL(nock_op, nxt);
+                    }
                   }
-                  TAIL_CALL(nock_op, nxt);
                 } else CRASH(machine);
               }
               default: CRASH(machine);
@@ -2035,7 +2071,7 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
           CRASH(machine);
         }
       } else /* if (T(rt) != cell_type) */ {
-        CITE(35); CRASH(machine);
+        CRASH(machine);
       }
     }
 
@@ -2048,7 +2084,7 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
           bool fits;
           satom_t satom = atom_get_satom(l, &fits);
           if (fits) {
-            if (satom == 1) { CITE(10); noun_t nxt = R(rt); RET(nxt); }
+            if (satom == 1) { noun_t nxt = R(rt); RET(nxt); }
             else {
               noun_t r = R(rt);
               if (T(r) == cell_type) {
@@ -2060,23 +2096,20 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
                   noun_t nxt = r;
                   for (int i = 0; i < msb; ++i) {
                     if (mask & satom) {
-                      CITE_INLINE(12); nxt = R(nxt);
+                      nxt = R(nxt);
                     } else {
-                      CITE_INLINE(11); nxt = L(nxt);
+                      nxt = L(nxt);
                     }
                     mask = (mask >> 1);
                   }
-                  CITE_END(msb > 0);
                   RET(nxt);
                 } else {
                   if (satom == 2) { 
-                    CITE(11);
                     noun_t nxt = L(r);
                     noun_t rr = R(r);
                     RET(nxt);
                   }
                   else if (satom == 3) {
-                    CITE(12);
                     noun_t nxt = R(r);
                     noun_t lr = L(r);
                     RET(nxt);
@@ -2084,12 +2117,11 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
                   /* else fall through to even/odd check */
                 }
               } else /* if (T(r) != cell_type) */ {
-                CITE(34); CRASH(machine);
+                CRASH(machine);
               }
             }
           } /* else fall through to even/odd check */
           if (atom_is_even(l)) { 
-            CITE(13);
             CELLS(1);
             if (DATA_MOVED()) {
               rt = root->noun; l = L(rt);
@@ -2098,7 +2130,6 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
             END_CELLS();
             CALL0(slash_op, nxt, f13);
           } else {
-            CITE(14);
             CELLS(1);
             if (DATA_MOVED()) {
               rt = root->noun; l = L(rt);
@@ -2109,21 +2140,21 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
           }
         }
       } else /* if (T(rt) != cell_type) */ {
-        CITE(34); CRASH(machine);
+        CRASH(machine);
       }
     }
 
     LABEL(cell_op): {
       if (T(root->noun) == cell_type) {
-        CITE(4); RET(_0);
+        RET(_0);
       } else {
-        CITE(5); RET(_1);
+        RET(_1);
       }
     }
 
     LABEL(inc_op): {
       if (T(root->noun) != cell_type) {
-        CITE(6); RET(atom_increment(root->noun));
+        RET(atom_increment(root->noun));
       } else {
         CRASH(machine);
       }
@@ -2136,15 +2167,15 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
         if (T(l) != cell_type) {
           noun_t r = R(rt);
           if (T(r) != cell_type && NOUN_EQUALS(atom_equals(l, r), _YES)) {
-            CITE(7) ; RET(_0);      
+            RET(_0);      
           } else {
-            CITE(8) ; RET(_1);
+            RET(_1);
           }
         } else {
           CRASH(machine);
         }
       } else {
-        CITE(33); CRASH(machine);
+        CRASH(machine);
       }
     }
 
@@ -2245,23 +2276,17 @@ static void arkham_run(int n_inputs, infile_t *inputs, bool trace_flag,
     else
       INFO0("Input file: standard input\n");
 
-    if (false) { // ZZZ
-      char *env = getenv("ARKHAM_ARG");
-      int arg = (env != NULL ? atoi(env) : 10);
-      test_jit(satom_as_noun(arg));
-    } else {
-      bool eof = false;
-      do {
-        // TODO: Use readline (or editline)
-        if (interactive_flag) printf("> ");
-        noun_t top = parse(&machine, input, &eof);
-        if (NOUN_IS_DEFINED(top)) {
-          noun_print(machine.out_file, arkham_run_impl(&machine, nock_op, top),
-                     true, true);
-          printf("\n");
+    bool eof = false;
+    do {
+      // TODO: Use readline (or editline)
+      if (interactive_flag) printf("> ");
+      noun_t top = parse(&machine, input, &eof);
+      if (NOUN_IS_DEFINED(top)) {
+        noun_print(machine.out_file, arkham_run_impl(&machine, nock_op, top),
+                   true, true);
+        printf("\n");
         }
-      } while (interactive_flag && !eof);
-    }
+    } while (interactive_flag && !eof);
 
     free_atoms(machine.heap);
     heap_free_free_list(machine.heap);

@@ -203,26 +203,26 @@ void machine_set(machine_t *m) {
   machine = m;
 }
 
-//ZZZ
-extern noun_t
-fib(noun_t n) {
-  ASSERT(noun_is_valid_atom(n, machine->heap), "noun_is_valid_atom(n, "
-         "machine->heap)\n");
+// For reference:
+// extern noun_t
+// fib(noun_t n) {
+//   ASSERT(noun_is_valid_atom(n, machine->heap), "noun_is_valid_atom(n, "
+//          "machine->heap)\n");
 
-  noun_t f0 = _0;
-  noun_t f1 = _1;
-  noun_t counter = _0;
-  while (true) {
-    if (NOUN_EQUALS(atom_equals(n, counter), _YES))
-      return f0;
-    else {
-      counter = atom_increment(counter);
-      noun_t sum = atom_add(f0, f1);
-      f0 = f1;
-      f1 = sum;
-    }
-  }
-}
+//   noun_t f0 = _0;
+//   noun_t f1 = _1;
+//   noun_t counter = _0;
+//   while (true) {
+//     if (NOUN_EQUALS(atom_equals(n, counter), _YES))
+//       return f0;
+//     else {
+//       counter = atom_increment(counter);
+//       noun_t sum = atom_add(f0, f1);
+//       f0 = f1;
+//       f1 = sum;
+//     }
+//   }
+// }
 
 static inline noun_t
 noun_nop(noun_t noun) {
@@ -259,7 +259,7 @@ typedef uint32_t jit_index_t;
 // Shouldn't be too big (uint16 is overkill).
 #define JIT_STACK_MAX UINT16_MAX
 
-typedef noun_t (*compiled_fn_t)(noun_t noun);//ZZZ
+typedef noun_t (*compiled_formula_t)(noun_t noun);
 
 namespace jit {
   namespace ast {
@@ -329,7 +329,7 @@ namespace jit {
       virtual ~Node() { }
       virtual void prep(Environment *env) = 0;
       virtual void dump(Environment *env, FILE *fp, int indent) = 0;
-      virtual void eval(Environment *env) = 0;
+      virtual void eval_ast(Environment *env) = 0;
 #if ARKHAM_LLVM
       virtual Value *compile(Environment *env) = 0;
 #endif
@@ -471,7 +471,7 @@ namespace jit {
         noun_t ancestors[depth];
         bool choice[depth];
 
-        int ncells;
+        int ncells = 0;
 
         // Count the number of cells we'll need:
         {
@@ -534,9 +534,9 @@ namespace jit {
           int i;
           for (i = depth - 1; i >= 0; --i) {
             if (choice[i])
-              n = cell_set_right(ancestors[i], n, heap);
+              n = cell_set_right(ancestors[i], n, heap); // XXXX
             else
-              n = cell_set_left(ancestors[i], n, heap);
+              n = cell_set_left(ancestors[i], n, heap); // XXXX
 
             if (NOUN_EQUALS(n, ancestors[i]))
               break;
@@ -659,22 +659,14 @@ namespace jit {
         }
       }
 
-      noun_t eval(Node *oper, noun_t args) {
+      noun_t eval_ast(Node *oper, noun_t args) {
         ENV_CHECK(this, NOUN_IS_UNDEFINED(args) == 
                   NOUN_IS_UNDEFINED(args_root->noun), "Arguments mismatch",
                   _UNDEFINED);
 
         initialize_args(args, args_root->noun);
 
-#if ARKHAM_LLVM
-        compiled_fn_t fn = (compiled_fn_t)fp; // ZZZ
-        noun_t compiled_result = (fn)(args); // ZZZ: unshare?
-        printf(">>> ");
-        noun_print(stdout, compiled_result, true, true); 
-        printf("\n");
-#endif
-    
-        oper->eval(this);
+        oper->eval_ast(this);
     
         noun_t result = failed ? _UNDEFINED : get_stack(0);
         SHARE(result, ENV_OWNER);
@@ -700,7 +692,7 @@ namespace jit {
 #endif /* ARKHAM_LLVM */
 
 #if ARKHAM_LLVM
-      void compile(Node *oper) {
+      compiled_formula_t compile(Node *oper) {
         llvm_t *llvm = machine->llvm;
 
         iter_t iter = (iter_t){ .iter = function->arg_begin() };
@@ -712,7 +704,7 @@ namespace jit {
             builder->CreateStore(LLVM_NOUN(it->initial_value), it->llvm_value);
     
         Value *body = oper->compile(this);
-        if (failed) return;
+        if (failed) return NULL;
     
         // Finish off the function.
         builder->CreateRet(body);
@@ -721,19 +713,21 @@ namespace jit {
         function->dump();
     
         // Validate the generated code, checking for consistency.
-        ENV_CHECK_VOID(this, !verifyFunction(*(function),
-          /*ZZZ*/ AbortProcessAction), "Invalid function");
+        ENV_CHECK(this, !verifyFunction(*(function),
+                  /*XXX*/ AbortProcessAction), "Invalid function", NULL);
     
         // Print the function.
-        function->dump();
+        function->dump(); // XXX
     
         // Optimize the function.
         llvm->pass_manager->run(*(function));
     
         // Print the function.
-        function->dump();
+        function->dump(); // XXX
     
         fp = llvm->engine->getPointerToFunction(function);
+
+        return (compiled_formula_t)fp;
       }
 #endif /* ARKHAM_LLVM */
 
@@ -745,7 +739,7 @@ namespace jit {
         // REVISIT: calling convention fastcc? (Function::setCallingConv())
     
         // Create argument list.
-        std::vector<Type*> params(1 /*ZZZ*/, llvm_noun_type());
+        std::vector<Type*> params(1 /*XXX*/, llvm_noun_type());
     
         // Create function type.
         FunctionType *functionType = FunctionType::get(llvm_noun_type(),
@@ -1072,11 +1066,11 @@ namespace jit {
       }
 #endif /* ARKHAM_LLVM */
 
-      void eval(Environment *env) {
+      void eval_ast(Environment *env) {
         if (env->failed) return;
         eval_impl(env, local_variable_initial_values->noun,
                   local_variable_index_map->noun);
-        inner->eval(env);
+        inner->eval_ast(env);
       }
 
       void set_inner(Node *inner) {
@@ -1212,11 +1206,11 @@ namespace jit {
       }
 #endif /* ARKHAM_LLVM */
 
-      void eval(Environment *env) {
+      void eval_ast(Environment *env) {
         if (env->failed) return;
 
-        left->eval(env);
-        right->eval(env);
+        left->eval_ast(env);
+        right->eval_ast(env);
     
         noun_t n1 = env->get_stack(stack_index);
         noun_t n2 = env->get_stack(stack_index + 1);
@@ -1257,10 +1251,10 @@ namespace jit {
         delete subexpr;
       }
 
-      void eval(Environment *env) {
+      void eval_ast(Environment *env) {
         if (env->failed) return;
 
-        subexpr->eval(env);
+        subexpr->eval_ast(env);
     
         env->set_stack(stack_index, atom_increment(
           env->get_stack(stack_index)));
@@ -1338,7 +1332,7 @@ namespace jit {
           env->max_stack_index = env->current_stack_index;
       }
 
-      void eval(Environment *env) {
+      void eval_ast(Environment *env) {
         if (env->failed) return;
 
         env->set_stack(stack_index, env->get_local(env->get_index_of_address(
@@ -1386,10 +1380,10 @@ namespace jit {
         stack_index = env->current_stack_index--;
       }
 
-      void eval(Environment *env) {
+      void eval_ast(Environment *env) {
         if (env->failed) return;
 
-        subexpr->eval(env);
+        subexpr->eval_ast(env);
 
         env->set_local(env->get_index_of_address(address), env->get_stack(
           stack_index));
@@ -1451,12 +1445,12 @@ namespace jit {
           (*it)->prep(env);
       }
 
-      void eval(Environment *env) {
+      void eval_ast(Environment *env) {
         if (env->failed) return;
 
         for(std::vector<Store *>::iterator it = stores.begin();
             it != stores.end(); ++it)
-          (*it)->eval(env);
+          (*it)->eval_ast(env);
         // Copy the locals for the next iteration:
         env->copy_locals();
       }
@@ -1473,6 +1467,7 @@ namespace jit {
               it != stores.end(); ++it)
             (*it)->compile_copy(env);
         }
+        return NULL;
       }
 #endif /* ARKHAM_LLVM */
 
@@ -1533,20 +1528,20 @@ namespace jit {
         iteration->prep(env);
       }
 
-      void eval(Environment *env) {
+      void eval_ast(Environment *env) {
         if (env->failed) return;
 
         while (true) {
-          test->eval(env);
+          test->eval_ast(env);
 
           if (env->failed) return;
           bool is_eq = NOUN_EQUALS(env->get_stack(stack_index), _YES);
           env->set_stack(stack_index, _UNDEFINED);
 
           if (is_eq)
-            result->eval(env);
+            result->eval_ast(env);
           else
-            iteration->eval(env);
+            iteration->eval_ast(env);
         }
       }
 
@@ -1627,37 +1622,63 @@ namespace jit {
 
 using namespace jit::ast;
 
-Node *compile(noun_t rt);
+Node *transform(noun_t rt);
 
-Node *compile_decl(noun_t rt) {
-  Node *inner = compile(R(rt));
+#define ARKHAM_TRACE_TRANSFORM true
+
+#define T_ENTER(n) if (ARKHAM_TRACE_TRANSFORM) do { \
+  fprintf(stdout, "enter %s: ", __FUNCTION__); \
+  noun_print(stdout, rt, true, false); \
+  fprintf(stdout, "\n"); \
+} while (false)
+
+#define T_LEAVE(n) if (ARKHAM_TRACE_TRANSFORM) do { \
+  fprintf(stdout, "leave %s: ", __FUNCTION__); \
+  noun_print(stdout, rt, true, false); \
+  fprintf(stdout, "\n"); \
+} while (false)
+
+Declaration *transform_decl(noun_t rt) {
+  T_ENTER(rt);
+
+  Node *inner = transform(R(rt));
 
   if (inner != NULL) {
     Declaration *decl = new Declaration(R(L(rt)));
     decl->set_inner(inner);
+    T_LEAVE(rt);
     return decl;
   }
 
   return NULL;
 }
 
-Node *compile_simple_loop(noun_t rt) {
+Loop *transform_simple_loop(noun_t rt) {
+  T_ENTER(rt);
+
+  if (!NOUN_IS_CELL(rt))
+    return NULL;
+
   noun_t l = L(rt);
   noun_t r = R(rt);
-  noun_t rl = L(l);
 
-  Node *test = compile(rl);
+  if (!NOUN_IS_CELL(r))
+    return NULL;
+
+  noun_t rl = L(r);
+
+  Node *test = transform(rl);
   Node *yes = NULL;
   Node *no = NULL;
 
   Expression *test_expr = dynamic_cast<Expression *>(test);
   if (test_expr != NULL) {
       noun_t rr = R(r);
-      yes = compile(L(rr));
+      yes = transform(L(rr));
 
       Expression *yes_expr = dynamic_cast<Expression *>(yes);
       if (yes != NULL) {
-        no = compile(R(rr));
+        no = transform(R(rr));
 
         Iteration *no_iter = dynamic_cast<Iteration *>(no);
         if (no != NULL) {
@@ -1671,6 +1692,8 @@ Node *compile_simple_loop(noun_t rt) {
           loop->set_test(test_expr);
           loop->set_result(yes_expr);
           loop->set_iteration(no_iter);
+
+          T_LEAVE(rt);
 
           return loop;
         }
@@ -1686,33 +1709,42 @@ Node *compile_simple_loop(noun_t rt) {
   return NULL;
 }
 
-Node *compile_load(noun_t rt) {
-  if (NOUN_IS_SATOM(rt)) 
+Load *transform_load(noun_t rt) {
+  T_ENTER(rt);
+
+  if (NOUN_IS_SATOM(rt)) {
+    T_LEAVE(rt);
     return new Load(NOUN_AS_SATOM(rt));
+  }
   else
     return NULL;
 }
 
-Node *compile_inc(noun_t rt) {
-  Node *sub = compile(rt);
+IncrementExpression *transform_inc(noun_t rt) {
+  T_ENTER(rt);
+
+  Node *sub = transform(rt);
 
   Expression *sub_expr = dynamic_cast<Expression *>(sub);
   if (sub_expr != NULL) {
     IncrementExpression *inc = new IncrementExpression();
     inc->set_subexpr(sub_expr);
+    T_LEAVE(rt);
     return inc;
   }
 
   return NULL;
 }
 
-Node *compile_binop(noun_t rt, enum binop_type type) {
-  Node *left = compile(L(rt));
+BinaryExpression *transform_binop(noun_t rt, enum binop_type type) {
+  T_ENTER(rt);
+
+  Node *left = transform(L(rt));
   Node *right = NULL;
 
   Expression *left_expr = dynamic_cast<Expression *>(left);
   if (left != NULL) {
-    Node *right = compile(L(rt));
+    Node *right = transform(R(rt));
 
     Expression *right_expr = dynamic_cast<Expression *>(right);
     if (right != NULL) {
@@ -1720,6 +1752,8 @@ Node *compile_binop(noun_t rt, enum binop_type type) {
 
       binop->set_left(left_expr);
       binop->set_right(right_expr);
+
+      T_LEAVE(rt);
 
       return binop;
     }
@@ -1733,25 +1767,77 @@ Node *compile_binop(noun_t rt, enum binop_type type) {
   return NULL;
 }
 
-Node *compile_stores(noun_t rt) {
-  //XXXX: stores?
+Store *transform_store(noun_t rt, jit_address_t address) {
+  T_ENTER(rt);
+
+  Node *sub = transform(rt);
+
+  Expression *sub_expr = dynamic_cast<Expression *>(sub);
+  if (sub_expr != NULL) {
+    Store *store = new Store(address);
+    store->set_subexpr(sub_expr);
+    T_LEAVE(rt);
+    return store;
+  }
+
   return NULL;
 }
 
-Node *compile_iter(noun_t rt) {
+bool transform_iter_impl(noun_t rt, jit_address_t address,
+                         Iteration *iteration) {
+  T_ENTER(rt);
+
+  if (address > JIT_ADDRESS_MAX)
+    return false;
+  else if (!NOUN_IS_CELL(rt))
+    return false;
+
+  noun_t l = L(rt);
+  bool result;
+
+  if (NOUN_IS_CELL(l)) {
+    result = transform_iter_impl(l, address * 2, iteration) && 
+      transform_iter_impl(R(rt), address * 2 + 1, iteration);
+  } else {
+    Store *store = transform_store(rt, address);
+
+    if (store != NULL) 
+      iteration->add_store(store);
+
+    result = (store != NULL);
+  }    
+
+  T_LEAVE(rt);
+
+  return result;
+}
+
+Iteration *transform_iter(noun_t rt) {
+  T_ENTER(rt);
+
   if (NOUN_EQUALS(L(rt), _2)) {
     noun_t r = R(rt);
     noun_t rl = L(r);
 
-    if (NOUN_IS_CELL(rl) && NOUN_EQUALS(L(rl), _2) && NOUN_EQUALS(R(rl), _0)) {
-      compile_stores(R(r));
+    if (NOUN_IS_CELL(rl) && NOUN_EQUALS(L(rl), _0) && NOUN_EQUALS(R(rl), _2)) {
+      Iteration *iteration = new Iteration();
+
+      if (!transform_iter_impl(R(r), 3, iteration)) {
+        delete iteration;
+        return NULL;
+      } else {
+        T_LEAVE(rt);
+        return iteration;
+      }
     }
   }
 
   return NULL;
 }
 
-Node *compile(noun_t rt) {
+Node *transform(noun_t rt) {
+  T_ENTER(rt);
+
   heap_t *heap = machine->heap;
   
   if (NOUN_IS_CELL(rt)) {
@@ -1759,31 +1845,39 @@ Node *compile(noun_t rt) {
     if (NOUN_IS_SATOM(l)) {
       noun_t r = R(rt);
       switch (NOUN_AS_SATOM(l)) {
+      case 0:
+        return transform_load(r);
       case 4:
-        return compile_inc(r);
+        return transform_inc(r);
       case 5:
-        return compile_binop(r, binop_eq_type);
+        return transform_binop(r, binop_eq_type);
       case 8:
         if (NOUN_IS_CELL(r)) {
           noun_t rl = L(r);
           
           if (NOUN_IS_CELL(rl)) {
             if (NOUN_EQUALS(L(rl), _1)) {
-              noun_t rr = R(r);
-              noun_t i = rr;
-              
-              if (NOUN_EQUALS(L(i), _9) && NOUN_EQUALS(L(i = R(i)), _2) &&
-                  NOUN_EQUALS(L(i = R(i)), _0) &&
-                  NOUN_EQUALS(L(i = R(i)), _1)) {
-                return compile_simple_loop(R(rl));
-              } else {
-                return compile_decl(r);
-              }
+              noun_t rr = R(r), rrr, rrrr;
+
+              if (!NOUN_IS_CELL(rr) || !NOUN_EQUALS(L(rr), _9))
+                goto is_decl;
+              rrr = R(rr);
+              if (!NOUN_IS_CELL(rrr) || !NOUN_EQUALS(L(rrr), _2))
+                goto is_decl;
+              rrrr = R(rrr);
+              if (!NOUN_IS_CELL(rrrr) || !NOUN_EQUALS(L(rrrr), _0) 
+                  || !NOUN_EQUALS(R(rrrr), _1))
+                goto is_decl;
+
+              return transform_simple_loop(R(rl));
+
+            is_decl:
+              return transform_decl(r);
             }
           }
         }
       case 9:
-        return compile_iter(r);
+        return transform_iter(r);
       }
     }
   }
@@ -1791,136 +1885,206 @@ Node *compile(noun_t rt) {
   return NULL;
 }
 
-Node *dec_ast(Environment *env) {
-  heap_t *heap = machine->heap;
+static compiled_formula_t compiled_formulas[16];
 
-  Declaration *decl_counter = new Declaration(_0); {
-    Loop *loop = new Loop();
-    /**/ decl_counter->set_inner(loop); {
-      BinaryExpression *eq = new BinaryExpression(binop_eq_type);
-      /**/ loop->set_test(eq); {
-        Load *eq_left = new Load(7);
-        /**/ eq->set_left(eq_left);
-      } {
-        IncrementExpression *eq_right = new IncrementExpression();
-        /**/ eq->set_right(eq_right); {
-          Load *load_6 = new Load(6);
-          /**/ eq_right->set_subexpr(load_6);
-        }
-      }
-    } {
-      Load *result = new Load(6);
-      /**/ loop->set_result(result);
-    } {
-      Iteration *iteration = new Iteration();
-      /**/ loop->set_iteration(iteration); {
-        Store *store_6 = new Store(6);
-        /**/ iteration->add_store(store_6); {
-          IncrementExpression *inc_6 = new IncrementExpression();
-          /**/ store_6->set_subexpr(inc_6); {
-            Load *load_6 = new Load(6);
-            /**/ inc_6->set_subexpr(load_6);
-          }
-        }
-      } {
-        Store *store_7 = new Store(7);
-        /**/ iteration->add_store(store_7); {
-          Load *load_7 = new Load(7);
-          /**/ store_7->set_subexpr(load_7);
-        }
-      }
-    }
-  }
+noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
+  satom_t index;
 
-  return decl_counter;
-}
+  if (!NOUN_IS_SATOM(hint))
+    return _UNDEFINED;
 
-Node *fib_ast(Environment *env) {
-  heap_t *heap = machine->heap;
-  CELLS(1);
-
-  Declaration *decl_f0_f1 = new Declaration(CELL(_0, _1)); {
-    Declaration *decl_counter = new Declaration(_0);
-    /**/ decl_f0_f1->set_inner(decl_counter); {
-      Loop *loop = new Loop();
-      /**/ decl_counter->set_inner(loop); {
-        BinaryExpression *eq = new BinaryExpression(binop_eq_type);
-        /**/ loop->set_test(eq); {
-          Load *eq_left = new Load(15);
-          /**/ eq->set_left(eq_left);
-        } {
-          Load *eq_right = new Load(6);
-          /**/ eq->set_right(eq_right);
-        } 
-      } {
-        Load *result = new Load(28);
-        /**/ loop->set_result(result);
-      } {
-        Iteration *iteration = new Iteration();
-        /**/ loop->set_iteration(iteration); {
-          Store *store_6 = new Store(6);
-          /**/ iteration->add_store(store_6);
-          IncrementExpression *inc_6 = new IncrementExpression();
-          /**/ store_6->set_subexpr(inc_6);
-          Load *load_6 = new Load(6);
-          /**/ inc_6->set_subexpr(load_6);
-        } {
-          Store *store_28 = new Store(28);
-          /**/ iteration->add_store(store_28);
-          Load *load_29 = new Load(29);
-          /**/ store_28->set_subexpr(load_29);
-        } {
-          Store *store_29 = new Store(29);
-          /**/ iteration->add_store(store_29);
-          BinaryExpression *add = new BinaryExpression(binop_add_type);
-          /**/ store_29->set_subexpr(add);
-          Load *add_left = new Load(28);
-          /**/ add->set_left(add_left);
-          Load *add_right = new Load(29);
-          /**/ add->set_right(add_right);
-        } {
-          Store *store_15 = new Store(15);
-          /**/ iteration->add_store(store_15);
-          Load *load_15 = new Load(15);
-          /**/ store_15->set_subexpr(load_15);
-        }
-      }
-    }
-  }
-
-  return decl_f0_f1;
-}
-
-void test_jit(noun_t args) { //ZZZ
-  // For testing, generate the AST that the pattern matcher *would*
-  // generate when parsing "fib" in Nock:
-
-  Environment *env = new Environment();
-  bool do_fib = true;
-  Node *root = (do_fib ? fib_ast(env) : dec_ast(env));
+  index = NOUN_AS_SATOM(hint);
   
-  env->prep(root);
-
-  root->dump(env, machine->trace_file, 0);
+  if (index > (sizeof(compiled_formulas) / sizeof(compiled_formulas[0])))
+    return _UNDEFINED;
 
 #if ARKHAM_LLVM
-  env->compile(root);
+  compiled_formula_t compiled_formula = compiled_formulas[index];
+
+  if (compiled_formula != NULL)
+    return (compiled_formula)(subject);
 #endif
 
-  noun_t result = env->eval(root, args);
+  Node *ast = transform(formula);
 
-  // ZZZ
-  if (env->failed) 
-    ERROR0("Evaluation failed\n");
-  else {
-    printf("%s(", (do_fib ? "fib" : "dec")); 
-    noun_print(stdout, args, true, true);
-    printf(")=");
-    noun_print(stdout, result, true, true);
-    printf("\n");
-    UNSHARE(result, ENV_OWNER);
+  if (ast == NULL)
+    return _UNDEFINED;
+  
+  Environment *env = new Environment();
+
+  env->prep(ast);
+
+  if (env->failed) {
+    INFO("Preparation failed: %" SATOM_FMT "\n", NOUN_AS_SATOM(hint));
+    goto failed;
   }
 
-  delete root;
+  ast->dump(env, machine->trace_file, 0); // XXX
+
+  noun_t result;
+
+#if ARKHAM_LLVM
+  compiled_formula = env->compile(ast);
+
+  if (env->failed) {
+    INFO("Compilation failed: %" SATOM_FMT "\n", NOUN_AS_SATOM(hint));
+    goto failed;
+  }
+
+  compiled_formulas[index] = compiled_formula;
+
+  result = (compiled_formula)(subject); // XXX: unshare?
+#else
+  result = env->eval_ast(ast, subject);
+
+  if (env->failed) {
+    INFO("Evaluation failed: %" SATOM_FMT "\n", NOUN_AS_SATOM(hint));
+    goto failed;
+  }
+#endif
+
+  return result;
+
+ failed:
+
+  delete ast;
   delete env;
+
+  return _UNDEFINED;
 }
+
+// QQQ: remove
+// Node *dec_ast(Environment *env) {
+//   heap_t *heap = machine->heap;
+
+//   Declaration *decl_counter = new Declaration(_0); {
+//     Loop *loop = new Loop();
+//     /**/ decl_counter->set_inner(loop); {
+//       BinaryExpression *eq = new BinaryExpression(binop_eq_type);
+//       /**/ loop->set_test(eq); {
+//         Load *eq_left = new Load(7);
+//         /**/ eq->set_left(eq_left);
+//       } {
+//         IncrementExpression *eq_right = new IncrementExpression();
+//         /**/ eq->set_right(eq_right); {
+//           Load *load_6 = new Load(6);
+//           /**/ eq_right->set_subexpr(load_6);
+//         }
+//       }
+//     } {
+//       Load *result = new Load(6);
+//       /**/ loop->set_result(result);
+//     } {
+//       Iteration *iteration = new Iteration();
+//       /**/ loop->set_iteration(iteration); {
+//         Store *store_6 = new Store(6);
+//         /**/ iteration->add_store(store_6); {
+//           IncrementExpression *inc_6 = new IncrementExpression();
+//           /**/ store_6->set_subexpr(inc_6); {
+//             Load *load_6 = new Load(6);
+//             /**/ inc_6->set_subexpr(load_6);
+//           }
+//         }
+//       } {
+//         Store *store_7 = new Store(7);
+//         /**/ iteration->add_store(store_7); {
+//           Load *load_7 = new Load(7);
+//           /**/ store_7->set_subexpr(load_7);
+//         }
+//       }
+//     }
+//   }
+
+//   return decl_counter;
+// }
+
+// QQQ: remove
+// Node *fib_ast(Environment *env) {
+//   heap_t *heap = machine->heap;
+//   CELLS(1);
+
+//   Declaration *decl_f0_f1 = new Declaration(CELL(_0, _1)); {
+//     Declaration *decl_counter = new Declaration(_0);
+//     /**/ decl_f0_f1->set_inner(decl_counter); {
+//       Loop *loop = new Loop();
+//       /**/ decl_counter->set_inner(loop); {
+//         BinaryExpression *eq = new BinaryExpression(binop_eq_type);
+//         /**/ loop->set_test(eq); {
+//           Load *eq_left = new Load(15);
+//           /**/ eq->set_left(eq_left);
+//         } {
+//           Load *eq_right = new Load(6);
+//           /**/ eq->set_right(eq_right);
+//         } 
+//       } {
+//         Load *result = new Load(28);
+//         /**/ loop->set_result(result);
+//       } {
+//         Iteration *iteration = new Iteration();
+//         /**/ loop->set_iteration(iteration); {
+//           Store *store_6 = new Store(6);
+//           /**/ iteration->add_store(store_6);
+//           IncrementExpression *inc_6 = new IncrementExpression();
+//           /**/ store_6->set_subexpr(inc_6);
+//           Load *load_6 = new Load(6);
+//           /**/ inc_6->set_subexpr(load_6);
+//         } {
+//           Store *store_28 = new Store(28);
+//           /**/ iteration->add_store(store_28);
+//           Load *load_29 = new Load(29);
+//           /**/ store_28->set_subexpr(load_29);
+//         } {
+//           Store *store_29 = new Store(29);
+//           /**/ iteration->add_store(store_29);
+//           BinaryExpression *add = new BinaryExpression(binop_add_type);
+//           /**/ store_29->set_subexpr(add);
+//           Load *add_left = new Load(28);
+//           /**/ add->set_left(add_left);
+//           Load *add_right = new Load(29);
+//           /**/ add->set_right(add_right);
+//         } {
+//           Store *store_15 = new Store(15);
+//           /**/ iteration->add_store(store_15);
+//           Load *load_15 = new Load(15);
+//           /**/ store_15->set_subexpr(load_15);
+//         }
+//       }
+//     }
+//   }
+
+//   return decl_f0_f1;
+// }
+
+// QQQ: remove
+// void test_jit(noun_t args) {
+//   // For testing, generate the AST that the pattern matcher *would*
+//   // generate when parsing "fib" in Nock:
+
+//   Environment *env = new Environment();
+//   bool do_fib = true;
+//   Node *root = (do_fib ? fib_ast(env) : dec_ast(env));
+  
+//   env->prep(root);
+
+//   root->dump(env, machine->trace_file, 0);
+
+// #if ARKHAM_LLVM
+//   env->compile(root);
+// #endif
+
+//   noun_t result = env->eval_ast(root, args);
+
+//   if (env->failed) 
+//     ERROR0("Evaluation failed\n");
+//   else {
+//     printf("%s(", (do_fib ? "fib" : "dec")); 
+//     noun_print(stdout, args, true, true);
+//     printf(")=");
+//     noun_print(stdout, result, true, true);
+//     printf("\n");
+//     UNSHARE(result, ENV_OWNER);
+//   }
+
+//   delete root;
+//   delete env;
+// }

@@ -39,7 +39,7 @@ endif
 # -lprofiler 
 
 arkham: build/bin arkham.o jit.o fnv_32.o fnv_64.o
-	$(CXX) ${OPT} -o build/bin/arkham build/bin/arkham.o build/bin/jit.o build/bin/fnv.o -lgmp -ljemalloc ${LLVM_LINK_FLAGS} ${CXX_LINK_FLAGS}
+	$(CXX) ${OPT} -o build/bin/arkham build/bin/arkham.o build/bin/jit.o build/bin/fnv_32.o build/bin/fnv_64.o -lgmp -ljemalloc ${LLVM_LINK_FLAGS} ${CXX_LINK_FLAGS}
 
 arkham.o: build/bin ${SRC}/arkham.c
 	$(CC) -DARKHAM_PRODUCTION=${ARKHAM_PRODUCTION} -DARKHAM_LLVM=${ARKHAM_LLVM} ${CC_FLAGS} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/arkham.c -o build/bin/arkham.o

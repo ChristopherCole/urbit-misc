@@ -2375,9 +2375,10 @@ static void arkham_run(int n_inputs, infile_t *inputs, bool trace_flag,
       INFO0("Input file: standard input\n");
 
     bool eof = false;
+    const char *prompt = executable_name;
     do {
       // TODO: Use readline (or editline)
-      if (interactive_flag) printf("> ");
+      if (interactive_flag) printf("%s> ", prompt);
       noun_t top = parse(&machine, input, &eof);
       if (NOUN_IS_DEFINED(top)) {
         struct timeval timing_begin, timing_end;

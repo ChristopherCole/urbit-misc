@@ -17,11 +17,14 @@
 #include <stdint.h>
 #include <inttypes.h>
 
+#include <sstream>
+#include <string>
 #include <vector>
 
 #if ARKHAM_LLVM
 #include "llvm/Analysis/Passes.h"
 #include "llvm/Analysis/Verifier.h"
+#include "llvm/Bitcode/ReaderWriter.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/ExecutionEngine/JIT.h"
 #include "llvm/ExecutionEngine/JITEventListener.h"
@@ -33,6 +36,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/PassManager.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Scalar.h"
 // REVISIT: cache result of "getGlobalContext()"?
 #if UINTPTR_MAX == UINT64_MAX
@@ -736,7 +740,7 @@ namespace jit {
 #endif /* ARKHAM_LLVM */
 
 #if ARKHAM_LLVM
-      compiled_formula_t compile(Node *oper) {
+      compiled_formula_t compile(Node *oper, satom_t index) {
         llvm_t *llvm = machine->llvm;
 
         iter_t iter = (iter_t){ .iter = function->arg_begin() };
@@ -772,6 +776,16 @@ namespace jit {
         if (ARKHAM_TRACE_LLVM_FUNCTIONS)
           function->dump();
     
+        //XXX
+        std::ostringstream filename;
+        filename << "/tmp/arkham-jiet-" << index << ".bc";
+        std::string errorInfo;
+        raw_fd_ostream stream(filename.str().c_str(), errorInfo);
+        if (!errorInfo.empty())
+          ERROR("Could not write to bitcode file '%s'\n", errorInfo.c_str());
+        else
+          WriteBitcodeToFile(llvm->module, stream);
+
         fp = llvm->engine->getPointerToFunction(function);
 
         return (compiled_formula_t)fp;
@@ -1967,7 +1981,7 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
   ast->dump(env, machine->trace_file, 0); // XXX
 
 #if ARKHAM_LLVM
-  compiled_formula = env->compile(ast);
+  compiled_formula = env->compile(ast, index);
 
   if (env->failed) {
     INFO("Compilation failed: %" SATOM_FMT "\n", NOUN_AS_SATOM(hint));

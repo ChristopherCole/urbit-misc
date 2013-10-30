@@ -21,7 +21,7 @@ ifeq ($(origin LLVM), undefined)
 else
   ARKHAM_LLVM = true
   LLVM_CC_FLAGS = `llvm-config --cflags`
-  LLVM_LINK_FLAGS = `llvm-config --libs --ldflags core analysis executionengine jit interpreter native`
+  LLVM_LINK_FLAGS = `llvm-config --libs --ldflags bitreader bitwriter core analysis executionengine jit interpreter native`
 endif
 
 UNAME_S := $(shell uname -s)

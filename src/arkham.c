@@ -2383,7 +2383,7 @@ static void arkham_run(int n_inputs, infile_t *inputs,
         if (timing_flag) {
           struct timeval elapsed;
           timeval_subtract(&elapsed, &timing_end, &timing_begin);
-          printf("%ld.%06ld\n", elapsed.tv_sec, (long)elapsed.tv_usec);
+          printf("time=%ld.%06lds\n", elapsed.tv_sec, (long)elapsed.tv_usec);
         }
       }
     } while (interactive_flag && !eof);

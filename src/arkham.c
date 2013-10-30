@@ -1626,15 +1626,6 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
   return result;
 }
 
-static void trace(machine_t *machine, enum op_t op, noun_t noun) {
-  FILE *file = machine->trace_file;
-  for (int i = 0; i < stack_size(machine->stack); ++i)
-    fprintf(file, "__ ");
-  fprintf(file, "%s", op_to_string(op));
-  noun_print(file, noun, true, true);
-}
-
-#define TRACE(root) if (ARKHAM_TRACE && trace_flag) trace(machine, op, root)
 #define PR(noun) do { \
     fprintf(file, "%s: ", #noun); \
     noun_print(file, noun, true, true); \
@@ -1678,7 +1669,9 @@ static void dump(machine_t *machine, frame_t *frame, root_t *root,
   ASSERT(false, "%s\n", function);
 }
 
-#define TF() if (ARKHAM_TRACE && machine->trace_flag) \
+#define ARKHAM_TRACE_FUNCTIONS false
+
+#define TF() if (ARKHAM_TRACE && ARKHAM_TRACE_FUNCTIONS) \
     fprintf(machine->trace_file, "function = %s\n", __FUNCTION__)
 
 static fn_ret_t f13(machine_t *machine, frame_t *frame, root_t *root) {
@@ -1906,7 +1899,6 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
                               noun_t root_noun) {
   heap_t *heap = machine->heap;
   FILE *file = machine->trace_file;
-  bool trace_flag = machine->trace_flag;
   root_t *root = root_new(heap, root_noun);
 
 #if ARKHAM_THREADED_INTERPRETER
@@ -1920,10 +1912,10 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
     &&crash_op,
     &&cond_op
   };
-#define NEXT_OP(o) TRACE(root->noun); inc_ops(machine); goto *op_labels[o]
+#define NEXT_OP(o) inc_ops(machine); goto *op_labels[o]
 #define LABEL(l) l
 #else /* #if !ARKHAM_THREADED_INTERPRETER */
-#define NEXT_OP(o) TRACE(root->noun); inc_ops(machine); op = o; continue
+#define NEXT_OP(o) inc_ops(machine); op = o; continue
 #define LABEL(l) case l
 #endif /* #if ARKHAM_THREADED_INTERPRETER */
 
@@ -2343,7 +2335,7 @@ static void timeval_subtract(struct timeval *elapsed, struct timeval *end,
   }
 }
 
-static void arkham_run(int n_inputs, infile_t *inputs, bool trace_flag,
+static void arkham_run(int n_inputs, infile_t *inputs,
                        bool interactive_flag, bool timing_flag,
                        const char *module_name) {
   for (int i = 0; i < n_inputs; ++i) {
@@ -2364,7 +2356,6 @@ static void arkham_run(int n_inputs, infile_t *inputs, bool trace_flag,
     FAIL(machine.log_file != NULL, "Could not create log file: '%s'\n",
          ARKHAM_LOG_FILE);
     machine.out_file = stdout;
-    machine.trace_flag = trace_flag;
 
     machine_set(&machine);
 
@@ -2441,10 +2432,6 @@ main(int argc, const char *argv[]) {
 
   // REVISIT: use getopt?
 
-  const char *trace_env = getenv("ARKHAM_TRACE");
-  if (trace_env == NULL) trace_env = "false";
-  bool trace_flag = !(strcasecmp(trace_env, "no") == 0 ||
-      strcmp(trace_env, "0") == 0 || strcasecmp(trace_env, "false") == 0);
   bool interactive = false;
   bool timing = false;
   infile_t *inputs = (infile_t *)calloc(1, argc * sizeof(infile_t));
@@ -2457,8 +2444,6 @@ main(int argc, const char *argv[]) {
     STRCMP_CASE("-i", interactive = true);
     STRCMP_CASE("--time", timing = true);
     STRCMP_CASE("-t", timing = true);
-    STRCMP_CASE("--enable-tracing", trace_flag = true);
-    STRCMP_CASE("--disable-tracing", trace_flag = false);
     STRCMP_CASE("-", {
         inputs[n_inputs].name = NULL;
         inputs[n_inputs].file = stdin;
@@ -2484,6 +2469,5 @@ main(int argc, const char *argv[]) {
     ++n_inputs;
     interactive = true;
   }
-  FAIL(ARKHAM_TRACE || !trace_flag, "Call tracing disabled for this build");
-  arkham_run(n_inputs, inputs, trace_flag, interactive, timing, argv[0]);
+  arkham_run(n_inputs, inputs, interactive, timing, argv[0]);
 }

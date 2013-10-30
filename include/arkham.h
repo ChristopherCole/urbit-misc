@@ -224,7 +224,6 @@ typedef struct machine {
 #if ARKHAM_LLVM
   struct llvm_s *llvm;
 #endif
-  bool trace_flag;
 #if ARKHAM_STATS
   unsigned long ops;
 #endif  

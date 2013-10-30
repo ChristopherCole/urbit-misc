@@ -12,6 +12,8 @@
 #include <inttypes.h>
 #include <sys/errno.h>
 #include <sys/mman.h>
+#include <sys/time.h>
+
 #include <gmp.h>
 #include <jemalloc/jemalloc.h>
 
@@ -56,6 +58,8 @@ enum op_t {
   crash_op,
   ret_op
 };
+
+static const char *executable_name = "arkham";
 
 typedef struct { noun_t root; enum op_t op; } fn_ret_t;
 
@@ -116,11 +120,17 @@ arkham_usage(const char *format, ...) {
     va_end(args);
   }
 
-  fprintf(stderr, "%s", "Usage: arkham [options] [<file1> <file2> ...]\n\n  "
-          "--enable-tracing\n        turn tracing on\n  --disable-tracing\n "
-          "       turn tracing off\n  --help\n        prints this usage "
-          "text\n  <file1> <file2> ...\n        files to interpret "
-          "(use \"-\" for standard input)\n");
+  fprintf(stderr, "Usage: %s [options] [<file1> <file2> ...]\n\n"
+          "  --help\n"
+          "        prints this usage text\n"
+          "  --interactive -i\n"
+          "        run in interactive mode\n"
+          "  --time -t\n"
+          "        time executions\n"
+          "  <file1> <file2> ...\n"
+          "        files to interpret (use \"-\" for standard input)\n",
+          executable_name);
+
   exit(1);
 }
 
@@ -253,7 +263,8 @@ noun_metainfo_print_owners(FILE *file, const char *prefix,
 }
 
 static void
-noun_metainfo_add_owner(noun_metainfo_t *noun_metainfo, noun_metainfo_t *owner) {
+noun_metainfo_add_owner(noun_metainfo_t *noun_metainfo,
+                        noun_metainfo_t *owner) {
   for (int i = 0; i < OWNERS_SIZE; ++i) {
     if (noun_metainfo->owners[i] == NULL) {
       noun_metainfo->owners[i] = owner;
@@ -276,7 +287,8 @@ noun_metainfo_add_owner(noun_metainfo_t *noun_metainfo, noun_metainfo_t *owner) 
 }
 
 static void
-noun_metainfo_remove_owner(noun_metainfo_t *noun_metainfo, noun_metainfo_t *owner) {
+noun_metainfo_remove_owner(noun_metainfo_t *noun_metainfo,
+                           noun_metainfo_t *owner) {
   for (int i = 0; i < OWNERS_SIZE; ++i) {
     if (noun_metainfo->owners[i] == owner) {
       noun_metainfo->owners[i] = NULL;
@@ -355,7 +367,10 @@ heap_print_stats(heap_t *heap, FILE *file) {
     heap->write_log_start));
 #endif /* #if ARKHAM_USE_NURSERY */
 #endif /* #if ARKHAM_STATS */
+}
 
+static void
+heap_print(heap_t *heap, FILE *file) {
 #if ALLOC_DEBUG
   for (noun_metainfo_t *noun_metainfo = heap->first; noun_metainfo != NULL; 
        noun_metainfo = noun_metainfo->next) {
@@ -466,8 +481,10 @@ heap_register_debug(heap_t *heap, noun_metainfo_t *noun_metainfo,
 #if ARKHAM_USE_NURSERY
 void
 heap_trace_nursery(noun_t *address, noun_metainfo_t *owner, heap_t *heap) {
-  // TODO: Batoms in nursery
   noun_t noun = *address;
+
+  if (!NOUN_IS_DEFINED(noun))
+    return;
 
   if (NOUN_IS_CELL(noun)) {
     cell_t *cell = NOUN_AS_CELL(noun);
@@ -501,12 +518,31 @@ heap_trace_nursery(noun_t *address, noun_metainfo_t *owner, heap_t *heap) {
     // Adjust the pointer and increment the referece count:
     *address = rc_space_noun;
     SHARE_RC_SPACE(rc_space_noun, owner);
-  } else if (NOUN_IS_BATOM(noun) && NOUN_IS_DEFINED(noun)) {
-    machine_t *machine = machine_get();
-    fprintf(machine->trace_file, "batom: ");
-    noun_print(machine->trace_file, noun, true, true);
-    fprintf(machine->trace_file, "\n");
-    ASSERT0(false); //XXX: TODO
+  } else if (NOUN_IS_BATOM(noun)) {
+    batom_t *batom = NOUN_AS_BATOM(noun);
+    noun_t rc_space_noun;
+
+    ASSERT0(sizeof(batom->val) >= sizeof(noun_t *));
+
+    if (batom->forwarded) {
+      rc_space_noun = *(noun_t *)(&(batom->val));
+    } else {
+      if (heap_is_nursery(heap, batom)) {
+        batom_t *rc_space_batom = batom_copy(heap, batom);
+        rc_space_noun = BATOM_AS_NOUN(rc_space_batom);
+
+        // Mark the batom as forwarded:
+        batom->forwarded = true;
+        *(noun_t *)(&(batom->val)) = rc_space_noun;
+      } else {
+        // This is not a nursery batom.
+        rc_space_noun = noun;
+      }
+    }
+
+    // Adjust the pointer and increment the referece count:
+    *address = rc_space_noun;
+    SHARE_RC_SPACE(rc_space_noun, owner);
   }
 }
 #endif /* #if ARKHAM_USE_NURSERY */
@@ -599,7 +635,7 @@ static void roots_build_write_log(machine_t *machine, noun_t *address,
 #if ARKHAM_USE_NURSERY
 void
 collect_garbage(size_t size) {
-  // TODO: Add timing and logging
+  // TODO: Add timing and logging to garbage collection
 
   machine_t *machine = machine_get();
   heap_t *heap = machine->heap;
@@ -683,37 +719,138 @@ heap_alloc_cells_stats(heap_t *heap, int count) {
 }
 #endif /* #if ARKHAM_STATS */
 
-static ARKHAM_USE_NURSERY_INLINE batom_t *
-heap_alloc_batoms(heap_t *heap, int count) {
-  // XXX: we have no way of adjusting to data motion -> make batoms like cells
-  batom_t *batom = (batom_t *)heap_alloc(heap, count * sizeof(batom_t), NULL);
+#if ARKHAM_STATS
+void
+heap_alloc_batoms_stats(heap_t *heap, int count) {
+  heap->batom_alloc += count;
+
+  int active_batoms = heap->batom_alloc - heap->batom_free;
+  if (active_batoms > heap->batoms_max) {
+    heap->batoms_max = active_batoms;
+  }
+}
+#endif /* #if ARKHAM_STATS */
+
+static inline void
+cell_init(cell_t *cell, noun_t left, noun_t right) {
+  cell->base.left = left;
+  cell->base.right = right;
+}
+
+static inline void
+batom_init(batom_t *batom, mpz_t val, bool clear) {
+  // TODO: Use custom mpz allocator (portable image)
+  batom->forwarded = false;
+  mpz_init(batom->val);
+  mpz_set(batom->val, val);
+  if (clear)
+    mpz_clear(val);
+}
+
+static inline void
+batom_init_ulong(batom_t *batom, unsigned long val) {
+  batom->forwarded = false;
+  mpz_init_set_ui(batom->val, val);
+}
+
+// TODO: Alloc without inline refs & metainfo
+#if ARKHAM_USE_NURSERY
+ARKHAM_USE_NURSERY_INLINE cell_t *
+cell_new_nursery(cell_t **cellp, noun_t left, noun_t right) {
+  cell_t *cell = (*cellp)++;
+  cell_init(cell, left, right);
+  return cell;
+}
+#endif /* #if ARKHAM_USE_NURSERY */
+
+// TODO: Alloc without inline refs & metainfo
+#if ARKHAM_USE_NURSERY
+ARKHAM_USE_NURSERY_INLINE batom_t *
+batom_new_nursery(batom_t **batomp, mpz_t val, bool clear) {
+  batom_t *batom = (*batomp)++;
+  batom_init(batom, val, clear);
+  return batom;
+}
+#endif /* #if ARKHAM_USE_NURSERY */
+
+// TODO: Alloc without inline refs & metainfo
+#if ARKHAM_USE_NURSERY
+ARKHAM_USE_NURSERY_INLINE batom_t *
+batom_new_ulong_nursery(batom_t **batomp, unsigned long val) {
+  batom_t *batom = (*batomp)++;
+  batom_init_ulong(batom, val);
+  return batom;
+}
+#endif /* #if ARKHAM_USE_NURSERY */
+
+static inline void
+noun_metainfo_init(noun_metainfo_t *metainfo, heap_t *heap,
+                   enum noun_type type) {
+#if INLINE_REFS
+  metainfo->refs = 0;
+#endif
+
+#if INLINE_REFS && ARKHAM_PADDING && ARKHAM_ASSERT
+  metainfo->_padding = 0;
+#endif
+
+#if ALLOC_DEBUG
+  heap_register_debug(heap, metainfo, type);
+#endif
+}
+
+static ARKHAM_USE_NURSERY_INLINE cell_t *
+heap_alloc_cell(heap_t *heap) {
+  cell_t *cell;
+
+#if CELL_FREE_LIST
+  if (heap->cell_free_list_size > 0) {
+    cell = (cell_t *)heap->cell_free_list[heap->cell_free_list_start];
+    if (++heap->cell_free_list_start == CELL_FREE_LIST_SIZE)
+      heap->cell_free_list_start = 0;
+    --heap->cell_free_list_size;
+#if ARKHAM_STATS
+    ++heap->cell_free_list_alloc;
+#endif
+  } else {
+#endif
+    cell = (cell_t *)calloc(1, sizeof(cell_t));
 
 #if ARKHAM_STATS
-  heap->batom_alloc += count;
-  int active_batom = heap->batom_alloc - heap->batom_free;
-  if (active_batom > heap->batoms_max) {
-    heap->batoms_max = active_batom;
+    heap_alloc_cells_stats(heap, 1);
+#endif
+#if CELL_FREE_LIST
   }
 #endif
 
-  return batom;
+  noun_metainfo_init(&(cell->metainfo), heap, cell_type);
+
+  return cell;
 }
 
 static ARKHAM_USE_NURSERY_INLINE batom_t *
 heap_alloc_batom(heap_t *heap) {
-  batom_t *batom = heap_alloc_batoms(heap, 1);
+  batom_t *batom = (batom_t *)calloc(1, sizeof(batom_t));
 
-#if ALLOC_DEBUG
-  heap_register_debug(heap, &(batom->metainfo), batom_type);
+#if ARKHAM_STATS
+  heap_alloc_batoms_stats(heap, 1);
 #endif
+
+  noun_metainfo_init(&(batom->metainfo), heap, batom_type);
 
   return batom;
 }
 
+static inline void
+noun_metainfo_free(noun_metainfo_t *metainfo) {
+  ASSERT0(metainfo->refs != ALLOC_FREE_MARKER);
+  metainfo->refs = ALLOC_FREE_MARKER;
+}
+
 static ARKHAM_USE_NURSERY_INLINE void
 heap_free_cell(heap_t *heap, cell_t *cell) {
-  ASSERT0(cell->metainfo.refs != ALLOC_FREE_MARKER);
-  cell->metainfo.refs = ALLOC_FREE_MARKER;
+  noun_metainfo_free(&(cell->metainfo));
+
 #if CELL_FREE_LIST
   if (heap->cell_free_list_size < CELL_FREE_LIST_SIZE) {
     heap->cell_free_list[(heap->cell_free_list_start +
@@ -738,15 +875,15 @@ heap_free_cell(heap_t *heap, cell_t *cell) {
 
 static void
 heap_free_batom(heap_t *heap, batom_t *batom) {
+  noun_metainfo_free(&(batom->metainfo));
+
+#if !ARKHAM_USE_NURSERY && !ALLOC_DEBUG
+  free(batom);
+#endif /* #if !ARKHAM_USE_NURSERY && !ALLOC_DEBUG */
 #if ARKHAM_STATS
   ASSERT0(heap->batom_free < heap->batom_alloc);
   ++heap->batom_free;
 #endif
-  ASSERT0(batom->metainfo.refs != ALLOC_FREE_MARKER);
-  batom->metainfo.refs = ALLOC_FREE_MARKER;
-#if !ARKHAM_USE_NURSERY && !ALLOC_DEBUG
-    free(batom);
-#endif /* #if !ARKHAM_USE_NURSERY && !ALLOC_DEBUG */
 }
 
 bool
@@ -928,111 +1065,56 @@ noun_unshare(noun_t noun, heap_t *heap, bool toplevel) {
   }
 }
 
-noun_t
-cell_set_left(noun_t noun, noun_t left, heap_t *heap) {
-  // XXX Handle four cases: N=nursery,RC=rc-space: [N,RC] -> [N,RC]
-  ASSERT0(noun_get_type(noun) == cell_type);
-  cell_t *cell = noun_as_cell(noun);
-  // XXX: if !logged then log
-  SHARE_CHILD_RC_SPACE(left, &(cell->metainfo));
-  UNSHARE_CHILD_RC_SPACE(noun_get_left(noun), &(cell->metainfo));
-  cell->base.left = left;
-  return CELL_AS_NOUN(cell);
-}
+/* noun_t */
+/* cell_set_left(noun_t noun, noun_t left, heap_t *heap) { */
+/*   // XXX Handle four cases: N=nursery,RC=rc-space: [N,RC] -> [N,RC] */
+/*   ASSERT0(noun_get_type(noun) == cell_type); */
+/*   cell_t *cell = noun_as_cell(noun); */
+/*   // XXX: if !logged then log */
+/*   SHARE_CHILD_RC_SPACE(left, &(cell->metainfo)); */
+/*   UNSHARE_CHILD_RC_SPACE(noun_get_left(noun), &(cell->metainfo)); */
+/*   cell->base.left = left; */
+/*   return CELL_AS_NOUN(cell); */
+/* } */
 
-noun_t
-cell_set_right(noun_t noun, noun_t right, heap_t *heap) {
-  // XXX Handle four cases: N=nursery,RC=rc-space: [N,RC] -> [N,RC]
-  ASSERT0(noun_get_type(noun) == cell_type);
-  cell_t *cell = noun_as_cell(noun);
-  // XXX: if !logged then log
-  SHARE_CHILD_RC_SPACE(right, &(cell->metainfo));
-  UNSHARE_CHILD_RC_SPACE(noun_get_right(noun), &(cell->metainfo));
-  cell->base.right = right;
-  return CELL_AS_NOUN(cell);
-}
-
-//XXX: alloc without inline refs & metainfo
-#if ARKHAM_USE_NURSERY
-ARKHAM_USE_NURSERY_INLINE cell_t *
-cell_new_nursery(cell_t **cellp, noun_t left, noun_t right) {
-  cell_t *cell = (*cellp)++;
-  cell->base.left = left;
-  cell->base.right = right;
-  return cell;
-}
-#endif /* #if ARKHAM_USE_NURSERY */
-
-static ARKHAM_USE_NURSERY_INLINE cell_t *
-heap_alloc_cell(heap_t *heap) {
-  cell_t *cell;
-
-#if CELL_FREE_LIST
-  if (heap->cell_free_list_size > 0) {
-    cell = (cell_t *)heap->cell_free_list[heap->cell_free_list_start];
-    if (++heap->cell_free_list_start == CELL_FREE_LIST_SIZE)
-      heap->cell_free_list_start = 0;
-    --heap->cell_free_list_size;
-#if ARKHAM_STATS
-    ++heap->cell_free_list_alloc;
-#endif
-  } else {
-#endif
-    cell = (cell_t *)calloc(1, sizeof(cell_t));
-#if ARKHAM_STATS
-    heap_alloc_cells_stats(heap, 1);
-#endif
-#if CELL_FREE_LIST
-  }
-#endif
-
-#if INLINE_REFS
-  (&(cell->metainfo))->refs = 0;
-#endif
-
-#if INLINE_REFS && ARKHAM_PADDING && ARKHAM_ASSERT
-  (&(cell->metainfo))->_padding = 0;
-#endif
-
-#if ALLOC_DEBUG
-  heap_register_debug(heap, &(cell->metainfo), cell_type);
-#endif
-
-  return cell;
-}
+/* noun_t */
+/* cell_set_right(noun_t noun, noun_t right, heap_t *heap) { */
+/*   // XXX Handle four cases: N=nursery,RC=rc-space: [N,RC] -> [N,RC] */
+/*   ASSERT0(noun_get_type(noun) == cell_type); */
+/*   cell_t *cell = noun_as_cell(noun); */
+/*   // XXX: if !logged then log */
+/*   SHARE_CHILD_RC_SPACE(right, &(cell->metainfo)); */
+/*   UNSHARE_CHILD_RC_SPACE(noun_get_right(noun), &(cell->metainfo)); */
+/*   cell->base.right = right; */
+/*   return CELL_AS_NOUN(cell); */
+/* } */
 
 ARKHAM_USE_NURSERY_INLINE cell_t *
 cell_new(heap_t *heap, noun_t left, noun_t right) {
   cell_t *cell = heap_alloc_cell(heap);
-  cell->base.left = left;
-  cell->base.right = right;
+  cell_init(cell, left, right);
   SHARE(left, &(cell->metainfo));
   SHARE(right, &(cell->metainfo));
   return cell;
 }
 
-noun_t ARKHAM_USE_NURSERY_INLINE
+ARKHAM_USE_NURSERY_INLINE batom_t *
 batom_new(heap_t *heap, mpz_t val, bool clear) {
   batom_t *batom = heap_alloc_batom(heap);
-  mpz_init(batom->val); // TODO: Use custom mpz allocator (portable image)
-  mpz_set(batom->val, val);
-  if (clear)
-    mpz_clear(val);
-  return BATOM_AS_NOUN(batom);
+  batom_init(batom, val, clear);
+  return batom;
 }
 
-noun_t
-batom_new_ui(heap_t *heap, unsigned long val) {
+ARKHAM_USE_NURSERY_INLINE batom_t *
+batom_new_ulong(heap_t *heap, unsigned long val) {
   batom_t *batom = heap_alloc_batom(heap);
-  mpz_init_set_ui(batom->val, val);
-  return BATOM_AS_NOUN(batom);
+  batom_init_ulong(batom, val);
+  return batom;
 }
 
-static noun_t
-batom_copy(noun_t noun, heap_t *heap) {
-  ASSERT0(!noun_is_freed(noun, heap));
-  ASSERT0(noun_get_type(noun) == batom_type);
-  batom_t *batom = (batom_t *)NOUN_AS_NOUN_METAINFO(noun);
+ARKHAM_USE_NURSERY_INLINE batom_t *
+batom_copy(heap_t *heap, batom_t *batom) {
+  ASSERT0(!noun_is_freed(BATOM_AS_NOUN(batom), heap));
   return batom_new(heap, batom->val, false);
 }
 
@@ -1043,7 +1125,7 @@ atom_new(heap_t *heap, const char *str) {
   if (!NO_SATOMS && mpz_cmp(val, SATOM_MAX_MPZ) <= 0)
     return satom_as_noun((satom_t)mpz_get_ui(val));
   else
-    return batom_new(heap, val, true);
+    return BATOM_AS_NOUN(batom_new(heap, val, true));
 }
 
 noun_t
@@ -1057,12 +1139,12 @@ atom_increment(noun_t noun) {
       return satom_as_noun(satom + 1);
     else {
       heap_t *heap = machine_get()->heap;
-      noun = batom_new_ui(heap, SATOM_MAX);
+      noun = BATOM_AS_NOUN(batom_new_ulong(heap, SATOM_MAX));
     }
   } else {
     heap_t *heap = machine_get()->heap;
     if (noun_is_shared(noun, heap))
-      noun = batom_copy(noun, heap);
+      noun = BATOM_AS_NOUN(batom_copy(heap, NOUN_AS_BATOM(noun)));
   }
 
   batom_t *batom = noun_as_batom(noun);
@@ -1100,22 +1182,20 @@ atom_add(noun_t n1, noun_t n2) {
       return satom_as_noun(sum);
   }
 
-  noun_t sum;
   heap_t *heap = machine_get()->heap;
+  batom_t *sum;
 
   if (NOUN_IS_SATOM(n1))
-    sum = batom_new_ui(heap, noun_as_satom(n1));
+    sum = batom_new_ulong(heap, noun_as_satom(n1));
   else
     sum = batom_new(heap, noun_as_batom(n1)->val, /* clear */ false);
 
-  batom_t *bsum = noun_as_batom(sum);
-
   if (NOUN_IS_SATOM(n2))
-    mpz_add_ui(bsum->val, bsum->val, noun_as_satom(n2));
+    mpz_add_ui(sum->val, sum->val, noun_as_satom(n2));
   else
-    mpz_add(bsum->val, bsum->val, noun_as_batom(n2)->val);
+    mpz_add(sum->val, sum->val, noun_as_batom(n2)->val);
   
-  return sum;
+  return BATOM_AS_NOUN(sum);
 }
 
 static bool
@@ -1168,7 +1248,7 @@ atom_div2(noun_t noun, heap_t *heap) {
     return SATOM_AS_NOUN(NOUN_AS_SATOM(noun) / 2);
   else {
     if (noun_is_shared(noun, heap))
-      noun = batom_copy(noun, heap);
+      noun = BATOM_AS_NOUN(batom_copy(heap, NOUN_AS_BATOM(noun)));
 
     batom_t *batom = noun_as_batom(noun);
     mpz_divexact_ui(batom->val, batom->val, 2);
@@ -1185,7 +1265,7 @@ atom_dec_div2(noun_t noun, heap_t *heap) {
     return SATOM_AS_NOUN((NOUN_AS_SATOM(noun) - 1) / 2);
   else {
     if (noun_is_shared(noun, heap))
-      noun = batom_copy(noun, heap);
+      noun = BATOM_AS_NOUN(batom_copy(heap, NOUN_AS_BATOM(noun)));
 
     batom_t *batom = noun_as_batom(noun);
     mpz_sub_ui(batom->val, batom->val, 1);
@@ -2218,18 +2298,18 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
 
 static void alloc_atoms(heap_t *heap) {
 #if NO_SATOMS
-  _UNDEFINED = SHARE(batom_new_ui(heap, SATOM_MAX), HEAP_OWNER);
-  _0 = SHARE(batom_new_ui(heap, 0), HEAP_OWNER);
-  _1 = SHARE(batom_new_ui(heap, 1), HEAP_OWNER);
-  _2 = SHARE(batom_new_ui(heap, 2), HEAP_OWNER);
-  _3 = SHARE(batom_new_ui(heap, 3), HEAP_OWNER);
-  _4 = SHARE(batom_new_ui(heap, 4), HEAP_OWNER);
-  _5 = SHARE(batom_new_ui(heap, 5), HEAP_OWNER);
-  _6 = SHARE(batom_new_ui(heap, 6), HEAP_OWNER);
-  _7 = SHARE(batom_new_ui(heap, 7), HEAP_OWNER);
-  _8 = SHARE(batom_new_ui(heap, 8), HEAP_OWNER);
-  _9 = SHARE(batom_new_ui(heap, 9), HEAP_OWNER);
-  _10 = SHARE(batom_new_ui(heap, 10), HEAP_OWNER);
+  _UNDEFINED = SHARE(batom_new_ulong(heap, SATOM_MAX), HEAP_OWNER);
+  _0 = SHARE(batom_new_ulong(heap, 0), HEAP_OWNER);
+  _1 = SHARE(batom_new_ulong(heap, 1), HEAP_OWNER);
+  _2 = SHARE(batom_new_ulong(heap, 2), HEAP_OWNER);
+  _3 = SHARE(batom_new_ulong(heap, 3), HEAP_OWNER);
+  _4 = SHARE(batom_new_ulong(heap, 4), HEAP_OWNER);
+  _5 = SHARE(batom_new_ulong(heap, 5), HEAP_OWNER);
+  _6 = SHARE(batom_new_ulong(heap, 6), HEAP_OWNER);
+  _7 = SHARE(batom_new_ulong(heap, 7), HEAP_OWNER);
+  _8 = SHARE(batom_new_ulong(heap, 8), HEAP_OWNER);
+  _9 = SHARE(batom_new_ulong(heap, 9), HEAP_OWNER);
+  _10 = SHARE(batom_new_ulong(heap, 10), HEAP_OWNER);
 #endif
 }
 
@@ -2250,8 +2330,22 @@ static void free_atoms(heap_t *heap) {
 #endif
 }
 
+static void timeval_subtract(struct timeval *elapsed, struct timeval *end, 
+                            struct timeval *start)
+{
+  elapsed->tv_sec = end->tv_sec - start->tv_sec;
+
+  if (end->tv_usec >= start->tv_usec)
+    elapsed->tv_usec = end->tv_usec - start->tv_usec;
+  else {
+    elapsed->tv_usec = 1000000 + end->tv_usec - start->tv_usec;
+    --elapsed->tv_sec;
+  }
+}
+
 static void arkham_run(int n_inputs, infile_t *inputs, bool trace_flag,
-    bool interactive_flag, const char *module_name) {
+                       bool interactive_flag, bool timing_flag,
+                       const char *module_name) {
   for (int i = 0; i < n_inputs; ++i) {
     machine_t machine;
 #if ARKHAM_STATS
@@ -2286,21 +2380,33 @@ static void arkham_run(int n_inputs, infile_t *inputs, bool trace_flag,
       if (interactive_flag) printf("> ");
       noun_t top = parse(&machine, input, &eof);
       if (NOUN_IS_DEFINED(top)) {
-        noun_print(machine.out_file, arkham_run_impl(&machine, nock_op, top),
-                   true, true);
+        struct timeval timing_begin, timing_end;
+        if (timing_flag)
+          gettimeofday(&timing_begin, NULL);
+        noun_t result = arkham_run_impl(&machine, nock_op, top);
+        if (timing_flag)
+          gettimeofday(&timing_end, NULL);
+        noun_print(machine.out_file, result, true, true);
         printf("\n");
+        if (timing_flag) {
+          struct timeval elapsed;
+          timeval_subtract(&elapsed, &timing_end, &timing_begin);
+          printf("%ld.%06ld\n", elapsed.tv_sec, (long)elapsed.tv_usec);
         }
+      }
     } while (interactive_flag && !eof);
 
     free_atoms(machine.heap);
     heap_free_free_list(machine.heap);
 #if ARKHAM_STATS
-    fprintf(machine.trace_file, "heap stats:\n");
+    fprintf(machine.trace_file, "> heap stats:\n");
     heap_print_stats(machine.heap, machine.trace_file);
-    fprintf(machine.trace_file, "stack stats:\n");
+    fprintf(machine.trace_file, "> stack stats:\n");
     stack_print_stats(machine.stack, machine.trace_file);
-    fprintf(machine.trace_file, "op stats:\n");
+    fprintf(machine.trace_file, "> op stats:\n");
     fprintf(machine.trace_file, "ops=%lu\n", machine.ops);
+    fprintf(machine.trace_file, "> heap:\n");
+    heap_print(machine.heap, machine.trace_file);
 #endif
 #if ARKHAM_LLVM
     llvm_delete(machine.llvm);
@@ -2323,6 +2429,8 @@ static void arkham_run(int n_inputs, infile_t *inputs, bool trace_flag,
 
 int
 main(int argc, const char *argv[]) {
+  executable_name = argv[0];
+
   mpz_init(SATOM_MAX_MPZ);
   mpz_set_ui(SATOM_MAX_MPZ, SATOM_MAX);
 
@@ -2337,6 +2445,7 @@ main(int argc, const char *argv[]) {
   bool trace_flag = !(strcasecmp(trace_env, "no") == 0 ||
       strcmp(trace_env, "0") == 0 || strcasecmp(trace_env, "false") == 0);
   bool interactive = false;
+  bool timing = false;
   infile_t *inputs = (infile_t *)calloc(1, argc * sizeof(infile_t));
   int n_inputs = 0;
   for (int i = 1; i < argc; ++i) {
@@ -2345,6 +2454,8 @@ main(int argc, const char *argv[]) {
     STRCMP_CASE("--help", arkham_usage(NULL));
     STRCMP_CASE("--interactive", interactive = true);
     STRCMP_CASE("-i", interactive = true);
+    STRCMP_CASE("--time", timing = true);
+    STRCMP_CASE("-t", timing = true);
     STRCMP_CASE("--enable-tracing", trace_flag = true);
     STRCMP_CASE("--disable-tracing", trace_flag = false);
     STRCMP_CASE("-", {
@@ -2373,5 +2484,5 @@ main(int argc, const char *argv[]) {
     interactive = true;
   }
   FAIL(ARKHAM_TRACE || !trace_flag, "Call tracing disabled for this build");
-  arkham_run(n_inputs, inputs, trace_flag, interactive, argv[0]);
+  arkham_run(n_inputs, inputs, trace_flag, interactive, timing, argv[0]);
 }

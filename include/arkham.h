@@ -112,8 +112,7 @@ typedef struct cell_base {
   noun_t right;
 } cell_base_t;
 
-//XXX: cell->tagged_cell ; cell_base->cell ; assert non-nursery on calls 
-//XXX: to query metainfo
+// TODO: Remove metainfo from cell and batom struct: put on the outside
 typedef struct cell {
   noun_metainfo_t metainfo;
   cell_base_t base;
@@ -127,9 +126,11 @@ typedef struct fat_cell {
 } fat_cell_t;
 #endif
 
-typedef struct {
+// TODO: Remove metainfo from cell and batom struct: put on the outside
+typedef struct batom {
   noun_metainfo_t metainfo;
   mpz_t val;
+  bool forwarded;
 } batom_t;
 
 #if ARKHAM_LLVM
@@ -236,11 +237,9 @@ typedef struct machine {
 #define NOUN_NOT_SATOM_FLAG 1
 #define NOUN_CELL_FLAG 2
 #define NOUN_FLAGS (NOUN_NOT_SATOM_FLAG | NOUN_CELL_FLAG)
-//XXX: cell->tagged_cell ; cell_base->cell ; assert non-nursery on calls 
-//XXX: to query metainfo
+// TODO: Remove metainfo from cell and batom struct: put on the outside
 #define NOUN_AS_PTR(noun) ((noun).value & ~(satom_t)NOUN_FLAGS)
-//XXX: cell->tagged_cell ; cell_base->cell ; assert non-nursery on calls 
-//XXX: to query metainfo (have inline call noun_get_metainfo w/ ASSERT
+// TODO: Remove metainfo from cell and batom struct: put on the outside
 #define NOUN_AS_NOUN_METAINFO(noun) ((noun_metainfo_t *)NOUN_AS_PTR(noun))
 #define CELL_AS_NOUN(cell) ((noun_t){ .value = (satom_t)(cell) | \
   NOUN_CELL_FLAG | NOUN_NOT_SATOM_FLAG })
@@ -427,6 +426,12 @@ cell_t *cell_new_nursery(struct cell **cellp, noun_t left, noun_t right);
 
 cell_t *cell_new(heap_t *heap, noun_t left, noun_t right);
 
+batom_t *batom_new(heap_t *heap, mpz_t val, bool clear);
+
+batom_t *batom_new_ulong(heap_t *heap, unsigned long val);
+
+batom_t *batom_copy(heap_t *heap, batom_t *batom);
+
 bool noun_is_valid_atom(noun_t noun, heap_t *heap);
 
 noun_t atom_add(noun_t n1, noun_t n2);
@@ -434,10 +439,6 @@ noun_t atom_add(noun_t n1, noun_t n2);
 noun_t atom_equals(noun_t n1, noun_t n2);
 
 noun_t atom_increment(noun_t noun);
-
-noun_t batom_new(heap_t *heap, mpz_t val, bool clear);
-
-noun_t batom_new_ui(heap_t *heap, unsigned long val);
 
 #if ALLOC_DEBUG
 noun_t noun_share(noun_t noun, heap_t *heap, noun_metainfo_t *owner);
@@ -488,6 +489,18 @@ heap_alloc_cells(heap_t *heap, int count, bool *possible_data_motion) {
 #endif
 
   return cell;
+}
+
+static inline batom_t *
+heap_alloc_batoms(heap_t *heap, int count, bool *possible_data_motion) {
+  batom_t *batom = (batom_t *)heap_alloc(heap, count * sizeof(batom_t),
+                                         possible_data_motion);
+
+#if ARKHAM_STATS && !ARKHAM_USE_NURSERY
+  heap_alloc_batoms_stats(heap, count);
+#endif
+
+  return batom;
 }
 
 typedef void (*do_roots_fn_t)(machine_t *machine, noun_t *address,

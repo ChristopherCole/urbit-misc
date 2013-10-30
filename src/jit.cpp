@@ -50,6 +50,9 @@ using namespace llvm;
 
 #include "arkham.h"
 
+#define ARKHAM_TRACE_TRANSFORM false
+#define ARKHAM_TRACE_LLVM_FUNCTIONS false
+
 #define L(noun) noun_get_left(noun)
 #define R(noun) noun_get_right(noun)
 #define T(noun) noun_get_type(noun)
@@ -370,11 +373,11 @@ namespace jit {
         heap_t *heap = machine->heap;
 
         // Use an "impossible" value as the placeholder:
-        args_placeholder = root_new(heap, batom_new_ui(heap,
-          JIT_INDEX_MAX + 1UL));
+        args_placeholder = root_new(heap, BATOM_AS_NOUN(batom_new_ulong(heap,
+            JIT_INDEX_MAX + 1UL)));
         SHARE(args_placeholder->noun, ENV_OWNER);
         loop_body_placeholder = root_new(heap,
-          batom_new_ui(heap, JIT_INDEX_MAX + 2UL));
+            BATOM_AS_NOUN(batom_new_ulong(heap, JIT_INDEX_MAX + 2UL)));
         SHARE(loop_body_placeholder->noun, ENV_OWNER);
         local_variable_index_map = root_new(heap, args_placeholder->noun);
         SHARE(local_variable_index_map->noun, ENV_OWNER);
@@ -567,7 +570,6 @@ namespace jit {
           for (i = depth - 1; i >= 0; --i) {
             CELLS(1);
             noun_t ancestor = *(noun_t *)vec_get(&ancestors, i);
-            // XXX: share and unshare (& on vector destroy)
             if (choice[i])
               n->noun = CELL(L(ancestor), n->noun);
             else
@@ -578,9 +580,7 @@ namespace jit {
 
           // If we got to the root of the index map then update 
           // variable which refers to it.
-            // XXX: share and unshare (& on vector destroy)
           ASSIGN(local_variable_index_map->noun, n->noun, ENV_OWNER);
-            // XXX: share and unshare (& on vector destroy)
           root_delete(heap, n);
         }
 
@@ -753,21 +753,24 @@ namespace jit {
         // Finish off the function.
         builder->CreateRet(body);
     
-        // Print the function.
-        function->dump();
+        // Print the function (before verification and optimization).
+        if (ARKHAM_TRACE_LLVM_FUNCTIONS)
+          function->dump();
     
-        // Validate the generated code, checking for consistency.
+        // Verify the generated code, checking for consistency.
         ENV_CHECK(this, !verifyFunction(*(function),
                   /*XXX*/ AbortProcessAction), "Invalid function", NULL);
     
-        // Print the function.
-        function->dump(); // XXX
+        // Print the function (after verification).
+        if (ARKHAM_TRACE_LLVM_FUNCTIONS)
+          function->dump();
     
         // Optimize the function.
         llvm->pass_manager->run(*(function));
     
-        // Print the function.
-        function->dump(); // XXX
+        // Print the function (after optimization).
+        if (ARKHAM_TRACE_LLVM_FUNCTIONS)
+          function->dump();
     
         fp = llvm->engine->getPointerToFunction(function);
 
@@ -1666,18 +1669,16 @@ using namespace jit::ast;
 
 Node *transform(noun_t rt);
 
-#define ARKHAM_TRACE_TRANSFORM true
-
 #define T_ENTER(n) if (ARKHAM_TRACE_TRANSFORM) do { \
-  fprintf(stdout, "enter %s: ", __FUNCTION__); \
-  noun_print(stdout, rt, true, false); \
-  fprintf(stdout, "\n"); \
+  fprintf(machine->trace_file, "enter %s: ", __FUNCTION__); \
+  noun_print(machine->trace_file, rt, true, false); \
+  fprintf(machine->trace_file, "\n"); \
 } while (false)
 
 #define T_LEAVE(n) if (ARKHAM_TRACE_TRANSFORM) do { \
-  fprintf(stdout, "leave %s: ", __FUNCTION__); \
-  noun_print(stdout, rt, true, false); \
-  fprintf(stdout, "\n"); \
+  fprintf(machine->trace_file, "leave %s: ", __FUNCTION__); \
+  noun_print(machine->trace_file, rt, true, false); \
+  fprintf(machine->trace_file, "\n"); \
 } while (false)
 
 Declaration *transform_decl(noun_t rt) {
@@ -1952,25 +1953,25 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
   if (ast == NULL)
     return _UNDEFINED;
   
+  noun_t result = _UNDEFINED;
+
   Environment *env = new Environment();
 
   env->prep(ast);
 
   if (env->failed) {
     INFO("Preparation failed: %" SATOM_FMT "\n", NOUN_AS_SATOM(hint));
-    goto failed;
+    goto done;
   }
 
   ast->dump(env, machine->trace_file, 0); // XXX
-
-  noun_t result;
 
 #if ARKHAM_LLVM
   compiled_formula = env->compile(ast);
 
   if (env->failed) {
     INFO("Compilation failed: %" SATOM_FMT "\n", NOUN_AS_SATOM(hint));
-    goto failed;
+    goto done;
   }
 
   compiled_formulas[index] = compiled_formula;
@@ -1981,18 +1982,16 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
 
   if (env->failed) {
     INFO("Evaluation failed: %" SATOM_FMT "\n", NOUN_AS_SATOM(hint));
-    goto failed;
+    goto done;
   }
 #endif
 
-  return result;
-
- failed:
+ done:
 
   delete ast;
   delete env;
 
-  return _UNDEFINED;
+  return result;
 }
 
 // QQQ: remove

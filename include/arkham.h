@@ -135,10 +135,6 @@ typedef struct batom {
 
 #if ARKHAM_LLVM
 void llvm_init_global();
-
-struct llvm_s *llvm_new(const char *module_name);
-
-void llvm_delete(struct llvm_s *llvm);
 #endif
 
 struct fstack;
@@ -221,9 +217,8 @@ typedef struct machine {
   FILE *out_file;
   FILE *log_file;
   FILE *trace_file;
-#if ARKHAM_LLVM
-  struct llvm_s *llvm;
-#endif
+  const char *executable_name;
+  const char *home_directory;
 #if ARKHAM_STATS
   unsigned long ops;
 #endif  

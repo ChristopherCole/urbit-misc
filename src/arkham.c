@@ -2,6 +2,8 @@
  * Copyright 2013 Christopher Cole
  */
 
+#include <inttypes.h>
+#include <pwd.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -9,10 +11,11 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <strings.h>
-#include <inttypes.h>
 #include <sys/errno.h>
 #include <sys/mman.h>
 #include <sys/time.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #include <gmp.h>
 #include <jemalloc/jemalloc.h>
@@ -2346,9 +2349,6 @@ static void arkham_run(int n_inputs, infile_t *inputs,
     machine.heap = heap_new();
     alloc_atoms(machine.heap);
     machine.stack = stack_new(1);
-#if ARKHAM_LLVM
-    machine.llvm = llvm_new(module_name);
-#endif
     machine.trace_file = fopen(ARKHAM_TRACE_FILE, "w");
     FAIL(machine.trace_file != NULL, "Could not create log file: '%s'\n",
          ARKHAM_TRACE_FILE);
@@ -2356,7 +2356,24 @@ static void arkham_run(int n_inputs, infile_t *inputs,
     FAIL(machine.log_file != NULL, "Could not create log file: '%s'\n",
          ARKHAM_LOG_FILE);
     machine.out_file = stdout;
+    machine.executable_name = executable_name;
 
+    char *home_env = getenv("HOME");
+    if (home_env != NULL)
+      machine.home_directory = strdup(home_env);
+    else {
+      int bufsize;
+      if ((bufsize = sysconf(_SC_GETPW_R_SIZE_MAX)) == -1)
+        abort(); //XXX: do something
+      
+      char buffer[bufsize];
+      struct passwd pwd, *result = NULL;
+      if (getpwuid_r(getuid(), &pwd, buffer, bufsize, &result) != 0 || !result)
+        abort(); //XXX: do something
+
+      machine.home_directory = strdup(pwd.pw_dir);
+    }
+    
     machine_set(&machine);
 
     infile_t *input = inputs + i;
@@ -2366,7 +2383,7 @@ static void arkham_run(int n_inputs, infile_t *inputs,
       INFO0("Input file: standard input\n");
 
     bool eof = false;
-    const char *prompt = executable_name;
+    const char *prompt = machine.executable_name;
     do {
       // TODO: Use readline (or editline)
       if (interactive_flag) printf("%s> ", prompt);
@@ -2400,9 +2417,6 @@ static void arkham_run(int n_inputs, infile_t *inputs,
     fprintf(machine.trace_file, "> heap:\n");
     heap_print(machine.heap, machine.trace_file);
 #endif
-#if ARKHAM_LLVM
-    llvm_delete(machine.llvm);
-#endif
     heap_free(machine.heap);
     stack_free(machine.stack);
     if (machine.log_file != stdout && machine.log_file != stderr)
@@ -2411,6 +2425,7 @@ static void arkham_run(int n_inputs, infile_t *inputs,
       fclose(machine.trace_file);
     if (machine.out_file != stdout && machine.out_file != stderr)
       fclose(machine.out_file);
+    free((char *)machine.home_directory);
   }
 }
 

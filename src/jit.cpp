@@ -35,8 +35,10 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/PassManager.h"
-#include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/system_error.h"
+#include "llvm/Support/TargetSelect.h"
 #include "llvm/Transforms/Scalar.h"
 // REVISIT: cache result of "getGlobalContext()"?
 #if UINTPTR_MAX == UINT64_MAX
@@ -56,6 +58,9 @@ using namespace llvm;
 
 #define ARKHAM_TRACE_TRANSFORM false
 #define ARKHAM_TRACE_LLVM_FUNCTIONS false
+#define ARKHAM_TRACE_AST false
+
+#define FUNCTION_NAME "singleton"
 
 #define L(noun) noun_get_left(noun)
 #define R(noun) noun_get_right(noun)
@@ -79,11 +84,14 @@ using namespace llvm;
 __thread machine_t *machine;
 
 #if ARKHAM_LLVM
+typedef noun_t (*compiled_formula_fn_t)(noun_t noun);
+
 typedef struct llvm_s {
   Module *module;
   ExecutionEngine *engine;
   FunctionPassManager *pass_manager;
   Function *uadd_with_overflow;
+  compiled_formula_fn_t fn;
 } llvm_t;
 #endif
 
@@ -121,16 +129,26 @@ public:
   }
 };
 
-llvm_t *llvm_new(const char *module_name) {
-  llvm_t *llvm = (llvm_t *)calloc(1, sizeof(llvm_t));
-  LLVMContext &Context = getGlobalContext();
+void llvm_store_function(llvm_t *llvm, Function *function) {
+  llvm->fn = (compiled_formula_fn_t)llvm->engine->
+    getPointerToFunction(function);
+}
 
-  llvm->module = new Module(module_name, Context);
+void llvm_lookup_and_store_function(llvm_t *llvm) {
+  llvm_store_function(llvm, llvm->engine->FindFunctionNamed(FUNCTION_NAME));
+}
+
+llvm_t *llvm_new_module(Module *module) {
+  llvm_t *llvm = (llvm_t *)calloc(1, sizeof(llvm_t));
+
+  llvm->module = module;
     
   // Create execution engine.
-  std::string ErrStr;
-  EngineBuilder builder = EngineBuilder(llvm->module).setErrorStr(&ErrStr);
+  std::string error;
+  EngineBuilder builder = EngineBuilder(llvm->module).setErrorStr(&error);
+  // XXX: check error
   if (false) {
+    // XXX: do something here?
     TargetMachine *target = builder.selectTarget();
     target->Options.PrintMachineCode = true;
     llvm->engine = builder.create(target);
@@ -138,10 +156,11 @@ llvm_t *llvm_new(const char *module_name) {
     llvm->engine = builder.create();
   }
   if (!llvm->engine) {
-    ERROR("Could not create ExecutionEngine: %s\n", ErrStr.c_str());
-    exit(1);
+    ERROR("Could not create ExecutionEngine: %s\n", error.c_str());
+    exit(1); //XXX: do something
   }
     
+  // XXX: (and be sure to free)
   llvm->engine->RegisterJITEventListener(new TestJITEventListener());
 
   std::vector<Type*> parameter_types;
@@ -193,6 +212,10 @@ llvm_t *llvm_new(const char *module_name) {
 
   return llvm;
 }
+
+llvm_t *llvm_new(const char *module_name) {
+  return llvm_new_module(new Module(module_name, getGlobalContext()));
+}
 #endif
 
 #if ARKHAM_LLVM
@@ -208,6 +231,24 @@ machine_t *machine_get() {
 
 void machine_set(machine_t *m) {
   machine = m;
+}
+
+std::string machine_path(machine_t *machine) {
+  std::ostringstream filename;
+  filename << machine->home_directory << "/." << machine->executable_name;
+  return filename.str();
+}
+
+std::string machine_jet_file(machine_t *machine, satom_t index) {
+  std::ostringstream filename;
+  filename << "jet-" << index << ".bc";
+  return filename.str();
+}
+
+std::string machine_jet_path(machine_t *machine, satom_t index) {
+  std::ostringstream filename;
+  filename << machine_path(machine) << "/" << machine_jet_file(machine, index);
+  return filename.str();
 }
 
 // For reference:
@@ -265,8 +306,6 @@ typedef uint32_t jit_index_t;
 
 // Shouldn't be too big (uint16 is overkill).
 #define JIT_STACK_MAX UINT16_MAX
-
-typedef noun_t (*compiled_formula_t)(noun_t noun);
 
 namespace jit {
   namespace ast {
@@ -353,9 +392,7 @@ namespace jit {
       root_t *local_variable_index_map;
       root_t *args_placeholder;
       root_t *loop_body_placeholder;
-#if ARKHAM_LLVM
-      void *fp;
-#endif
+      llvm_t *m_llvm;
       // Failure information:
       const char *predicate;
       const char *failure_message;
@@ -373,7 +410,7 @@ namespace jit {
       jit_index_t current_stack_index;
       jit_index_t max_stack_index;
 
-      Environment() {
+      Environment(std::string module_name) {
         heap_t *heap = machine->heap;
 
         // Use an "impossible" value as the placeholder:
@@ -388,6 +425,8 @@ namespace jit {
     
         current_stack_index = -1;
         args_root = root_new(heap, _UNDEFINED);
+
+        m_llvm = llvm_new(module_name.c_str());
       }
 
       ~Environment() {
@@ -410,8 +449,12 @@ namespace jit {
         //   delete function;
         if (builder != NULL)
           delete builder;
+        if (m_llvm != NULL && failed)
+          llvm_delete(m_llvm);
 #endif
       }
+
+      llvm_t *llvm() { return m_llvm; }
 
       void fail(const char *predicate, const char *failure_message,
                 const char *file_name, const char *function_name,
@@ -740,9 +783,7 @@ namespace jit {
 #endif /* ARKHAM_LLVM */
 
 #if ARKHAM_LLVM
-      compiled_formula_t compile(Node *oper, satom_t index) {
-        llvm_t *llvm = machine->llvm;
-
+      llvm_t *compile(Node *oper, satom_t index) {
         iter_t iter = (iter_t){ .iter = function->arg_begin() };
         compile_copy_args_to_locals(args_root->noun, &iter);
         // Set initial values for locals:
@@ -763,38 +804,38 @@ namespace jit {
     
         // Verify the generated code, checking for consistency.
         ENV_CHECK(this, !verifyFunction(*(function),
-                  /*XXX*/ AbortProcessAction), "Invalid function", NULL);
+          /*XXX*/ AbortProcessAction), "Invalid function", NULL);
     
         // Print the function (after verification).
         if (ARKHAM_TRACE_LLVM_FUNCTIONS)
           function->dump();
     
         // Optimize the function.
-        llvm->pass_manager->run(*(function));
+        llvm()->pass_manager->run(*(function));
     
         // Print the function (after optimization).
         if (ARKHAM_TRACE_LLVM_FUNCTIONS)
           function->dump();
     
-        //XXX
-        std::ostringstream filename;
-        filename << "/tmp/arkham-jiet-" << index << ".bc";
-        std::string errorInfo;
-        raw_fd_ostream stream(filename.str().c_str(), errorInfo);
-        if (!errorInfo.empty())
-          ERROR("Could not write to bitcode file '%s'\n", errorInfo.c_str());
-        else
-          WriteBitcodeToFile(llvm->module, stream);
+        std::string filename = machine_jet_path(machine, index);
+        std::string error;
+        raw_fd_ostream stream(filename.c_str(), error);
+        if (!error.empty()) {
+          INFO("Could not open bitcode file for writing '%s': '%s'\n",
+               filename.c_str(), error.c_str());
+        } else {
+          INFO("Wrote bitcode to file '%s'\n", filename.c_str());
+          WriteBitcodeToFile(llvm()->module, stream);
+        }
 
-        fp = llvm->engine->getPointerToFunction(function);
+        llvm_store_function(llvm(), function);
 
-        return (compiled_formula_t)fp;
+        return llvm();
       }
 #endif /* ARKHAM_LLVM */
 
       void prep(Node *oper) {
 #if ARKHAM_LLVM
-        llvm_t *llvm = machine->llvm;
         builder = new IRBuilder<> (getGlobalContext());
     
         // REVISIT: calling convention fastcc? (Function::setCallingConv())
@@ -808,7 +849,7 @@ namespace jit {
     
         // Create function.
         function = Function::Create(functionType, Function::PrivateLinkage,
-          /* anonymous */ std::string(""), llvm->module);
+          std::string(FUNCTION_NAME), llvm()->module);
     
         // Create basic block.
         BasicBlock *block = BasicBlock::Create(getGlobalContext(), "entry",
@@ -1205,7 +1246,7 @@ namespace jit {
                                     Value *right, IfThenElseBlocks *blocks,
                                     bool *add_default_branch) {
         return env->builder->CreateICmpEQ(env->builder->CreateCall2(
-          machine->llvm->module->getFunction("atom_equals"), left, right),
+          env->llvm()->module->getFunction("atom_equals"), left, right),
           LLVM_NOUN(_YES));
       }
 
@@ -1229,7 +1270,7 @@ namespace jit {
                                  IfThenElseBlocks *blocks,
                                  bool *add_default_branch) {
         Value *result = env->builder->CreateCall2(
-          machine->llvm->uadd_with_overflow, left, right);
+          env->llvm()->uadd_with_overflow, left, right);
         Value *sum = env->builder->CreateExtractValue(result, 0);
         Value *overflow = env->builder->CreateExtractValue(result, 1);
         return if_else(env, "add.check.overflow", llvm_noun_type(), sum, NULL,
@@ -1240,7 +1281,7 @@ namespace jit {
       static Value *add_if_not_atoms(Environment *env, Value *left,
                                      Value *right, IfThenElseBlocks *blocks,
                                      bool *add_default_branch) {
-        return env->builder->CreateCall2(machine->llvm->module->getFunction(
+        return env->builder->CreateCall2(env->llvm()->module->getFunction(
           "atom_add"), left, right);
       }
 
@@ -1344,7 +1385,7 @@ namespace jit {
       static Value *inc_if_not_atoms(Environment *env, Value *subexpr,
                                      Value *unused, IfThenElseBlocks *blocks,
                                      bool *add_default_branch) {
-        return env->builder->CreateCall(machine->llvm->module->getFunction(
+        return env->builder->CreateCall(env->llvm()->module->getFunction(
           "atom_increment"), subexpr);
       }
 
@@ -1942,7 +1983,9 @@ Node *transform(noun_t rt) {
   return NULL;
 }
 
-static compiled_formula_t compiled_formulas[16];
+// TODO: More jet slots
+static llvm_t *compiled_formulas[16];
+static llvm_t undefined_compiled_formula;
 
 noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
   satom_t index;
@@ -1953,23 +1996,58 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
   index = NOUN_AS_SATOM(hint);
   
   if (index > (sizeof(compiled_formulas) / sizeof(compiled_formulas[0])))
-    return _UNDEFINED;
+    return _UNDEFINED; //XXX: log
+
+  Node *ast = NULL;
+  noun_t result = _UNDEFINED;
+  Environment *env = NULL;
 
 #if ARKHAM_LLVM
-  compiled_formula_t compiled_formula = compiled_formulas[index];
+  llvm_t *compiled_formula = compiled_formulas[index];
 
-  if (compiled_formula != NULL)
-    return (compiled_formula)(subject);
+  if (compiled_formula != NULL) {
+    if (compiled_formula != &undefined_compiled_formula)
+      return (compiled_formula->fn)(subject);
+    else
+      return _UNDEFINED;
+  }
+
+  {
+    std::string filename = machine_jet_path(machine, index);
+    OwningPtr<MemoryBuffer> file;
+    error_code read_error = MemoryBuffer::getFile(filename.c_str(), file);
+
+    if (read_error) {
+      ERROR("Could not open bitcode file for reading '%s': '%s'\n",
+            filename.c_str(), read_error.message().c_str());
+    } else {
+      INFO("Read bitcode from file '%s'\n", filename.c_str());
+
+      std::string parse_error;
+      Module *module = ParseBitcodeFile(file.take(), getGlobalContext(),
+                                        &parse_error);
+
+      if (module != NULL) {
+        compiled_formula = llvm_new_module(module);
+        llvm_lookup_and_store_function(compiled_formula);
+
+        goto compiled;
+      } else {
+        ERROR("Could not read bitcode file '%s': '%s'\n",
+              filename.c_str(), parse_error.c_str());
+      }
+    }
+  }
 #endif
 
-  Node *ast = transform(formula);
+  ast = transform(formula);
 
-  if (ast == NULL)
-    return _UNDEFINED;
+  if (ast == NULL) {
+    compiled_formulas[index] = &undefined_compiled_formula;
+    goto done;
+  }
   
-  noun_t result = _UNDEFINED;
-
-  Environment *env = new Environment();
+  env = new Environment(machine_jet_file(machine, index));
 
   env->prep(ast);
 
@@ -1978,7 +2056,8 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
     goto done;
   }
 
-  ast->dump(env, machine->trace_file, 0); // XXX
+  if (ARKHAM_TRACE_AST)
+    ast->dump(env, machine->trace_file, 0);
 
 #if ARKHAM_LLVM
   compiled_formula = env->compile(ast, index);
@@ -1988,22 +2067,27 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
     goto done;
   }
 
+ compiled:
+
   compiled_formulas[index] = compiled_formula;
 
-  result = (compiled_formula)(subject); // XXX: unshare?
+  result = (compiled_formula->fn)(subject); // XXX: unshare?
 #else
   result = env->eval_ast(ast, subject);
 
-  if (env->failed) {
+  if (env->failed)
     INFO("Evaluation failed: %" SATOM_FMT "\n", NOUN_AS_SATOM(hint));
-    goto done;
-  }
 #endif
 
  done:
 
-  delete ast;
-  delete env;
+  if (NOUN_IS_UNDEFINED(result))
+    compiled_formulas[index] = &undefined_compiled_formula;
+
+  if (ast != NULL)
+    delete ast;
+  if (env != NULL)
+    delete env;
 
   return result;
 }

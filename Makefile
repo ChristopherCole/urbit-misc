@@ -2,7 +2,7 @@
 # Copyright 2013 Christopher Cole
 #
 
-# On OSX/ports: /opt/local/libexec/llvm-3.3/bin/llvm-config
+# On OSX/MacPorts: /opt/local/libexec/llvm-3.3/bin/llvm-config
 # On Ubuntu/Mint: /usr/lib/llvm-3.3/bin/llvm-config
 
 SRC = src
@@ -31,18 +31,27 @@ ifeq ($(UNAME_S),Linux)
   CXX_LINK_FLAGS = -lstdc++
 endif
 ifeq ($(UNAME_S),Darwin)
-  CC_FLAGS = -I/opt/local/include
-  CXX_FLAGS = -I/opt/local/include
-  CXX_LINK_FLAGS = -L/opt/local/lib -lc++
+  PACKAGE_ROOT= /opt/local
+  LLVM_ROOT= /Users/Dad/Packages/llvm/install
+#  LLVM_ROOT= ${PACKAGE_ROOT}
+  CC_FLAGS = -I${LLVM_ROOT}/include -I${PACKAGE_ROOT}/include
+  CXX_FLAGS = -I${LLVM_ROOT}/include -I${PACKAGE_ROOT}/include
+  CXX_LINK_FLAGS = -L${LLVM_ROOT}/lib -L${PACKAGE_ROOT}/lib -lc++
 endif
 
 # -lprofiler 
 
-arkham: build/bin arkham.o jit.o fnv_32.o fnv_64.o
-	$(CXX) ${OPT} -o build/bin/arkham build/bin/arkham.o build/bin/jit.o build/bin/fnv_32.o build/bin/fnv_64.o -lgmp -ljemalloc ${LLVM_LINK_FLAGS} ${CXX_LINK_FLAGS}
+arkham: build/bin arkham.o jit.o fnv_32.o fnv_64.o mkpath.o
+	$(CXX) ${OPT} -o build/bin/arkham build/bin/arkham.o build/bin/jit.o build/bin/fnv_32.o build/bin/fnv_64.o build/bin/mkpath.o -lgmp -ljemalloc ${LLVM_LINK_FLAGS} ${CXX_LINK_FLAGS}
+
+fib.bc: build/bin ${SRC}/fib.c
+	$(CC) -DARKHAM_PRODUCTION=${ARKHAM_PRODUCTION} -DARKHAM_LLVM=${ARKHAM_LLVM} ${CC_FLAGS} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/fib.c -emit-llvm -o build/bin/fib.bc
 
 arkham.o: build/bin ${SRC}/arkham.c
 	$(CC) -DARKHAM_PRODUCTION=${ARKHAM_PRODUCTION} -DARKHAM_LLVM=${ARKHAM_LLVM} ${CC_FLAGS} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/arkham.c -o build/bin/arkham.o
+
+mkpath.o: build/bin ${SRC}/mkpath.c
+	$(CC) ${CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/mkpath.c -o build/bin/mkpath.o
 
 fnv_32.o: build/bin ${SRC}/fnv_32.c
 	$(CC) ${CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/fnv_32.c -o build/bin/fnv_32.o

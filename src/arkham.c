@@ -2436,7 +2436,9 @@ static void arkham_run(int n_inputs, infile_t *inputs,
 
 int
 main(int argc, const char *argv[]) {
-  executable_name = argv[0];
+  int separator = '/';
+  char *last = strrchr(argv[0], separator);
+  executable_name = (last != NULL ? last + 1 : argv[0]);
 
   mpz_init(SATOM_MAX_MPZ);
   mpz_set_ui(SATOM_MAX_MPZ, SATOM_MAX);

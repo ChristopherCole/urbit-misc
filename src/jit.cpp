@@ -28,6 +28,7 @@
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/ExecutionEngine/JIT.h"
 #include "llvm/ExecutionEngine/JITEventListener.h"
+#include "llvm/GVMaterializer.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Intrinsics.h"
@@ -55,7 +56,9 @@ using namespace llvm;
 #endif /* ARKHAM_LLVM */
 
 #include "arkham.h"
+#include "mkpath.h"
 
+#define ARKHAM_TRACE_DISASSEMBLY false
 #define ARKHAM_TRACE_TRANSFORM false
 #define ARKHAM_TRACE_LLVM_FUNCTIONS false
 #define ARKHAM_TRACE_AST false
@@ -107,6 +110,7 @@ void llvm_init_global() {
 #endif
 
 #if ARKHAM_LLVM
+#if ARKHAM_TRACE_DISASSEMBLY
 class TestJITEventListener : public JITEventListener {
 public:
   virtual void NotifyFunctionEmitted(const Function &function,
@@ -116,18 +120,18 @@ public:
     static char hex[] = "0123456789abcdef";
     INFO("%s %p %lu\n", __FUNCTION__, data, size);
     char *instructions = static_cast<char *>(data);
-    FILE *fp = fopen("/tmp/disasm", "w");
+    FILE *file = machine->trace_file;
     for (int i = 0; i < size; ++i) {
       if (i > 0)
-        fprintf(fp, " ");
+        fprintf(file, " ");
       char instruction = instructions[i];
-      fprintf(fp, "0x%c%c", hex[(instruction >> 4) & 0xf],
+      fprintf(file, "0x%c%c", hex[(instruction >> 4) & 0xf],
               hex[instruction & 0xf]);
     }
-    fprintf(fp, "\n");
-    fclose(fp);
+    fprintf(file, "\n");
   }
 };
+#endif /* ARKHAM_TRACE_DISASSEMBLY */
 
 void llvm_store_function(llvm_t *llvm, Function *function) {
   llvm->fn = (compiled_formula_fn_t)llvm->engine->
@@ -135,6 +139,7 @@ void llvm_store_function(llvm_t *llvm, Function *function) {
 }
 
 void llvm_lookup_and_store_function(llvm_t *llvm) {
+  // XXX: don't crash on missing name
   llvm_store_function(llvm, llvm->engine->FindFunctionNamed(FUNCTION_NAME));
 }
 
@@ -160,8 +165,10 @@ llvm_t *llvm_new_module(Module *module) {
     exit(1); //XXX: do something
   }
     
+#if ARKHAM_TRACE_DISASSEMBLY
   // XXX: (and be sure to free)
   llvm->engine->RegisterJITEventListener(new TestJITEventListener());
+#endif
 
   std::vector<Type*> parameter_types;
   parameter_types.push_back(llvm_noun_type());
@@ -175,18 +182,30 @@ llvm_t *llvm_new_module(Module *module) {
                                                    parameter_types,
                                                    /* is_vararg */ false);
 
-  Function* atom_increment_fn = Function::Create(function1_type,
-                                                 Function::ExternalLinkage,
-                                                 "atom_increment",
-                                                 llvm->module);
+  Function *atom_increment_fn = llvm->engine->
+    FindFunctionNamed("atom_increment");
+  if (atom_increment_fn == NULL) {
+    atom_increment_fn = Function::Create(function1_type,
+                                         Function::ExternalLinkage,
+                                         "atom_increment",
+                                         llvm->module);
+  }
   llvm->engine->addGlobalMapping(atom_increment_fn, (void *)atom_increment);
-  Function* atom_equals_fn = Function::Create(function2_type,
-                                              Function::ExternalLinkage,
-                                              "atom_equals", llvm->module);
+
+  Function *atom_equals_fn = llvm->engine->FindFunctionNamed("atom_equals");
+  if (atom_equals_fn == NULL) {
+    atom_equals_fn = Function::Create(function2_type,
+                                      Function::ExternalLinkage,
+                                      "atom_equals", llvm->module);
+  }
   llvm->engine->addGlobalMapping(atom_equals_fn, (void *)atom_equals);
-  Function* atom_add_fn = Function::Create(function2_type,
-                                           Function::ExternalLinkage,
-                                           "atom_add", llvm->module);
+
+  Function *atom_add_fn = llvm->engine->FindFunctionNamed("atom_add");
+  if (atom_add_fn == NULL) {
+    atom_add_fn = Function::Create(function2_type,
+                                   Function::ExternalLinkage,
+                                   "atom_add", llvm->module);
+  }
   llvm->engine->addGlobalMapping(atom_add_fn, (void *)atom_add);
 
   // Setup optimizations.
@@ -245,32 +264,18 @@ std::string machine_jet_file(machine_t *machine, satom_t index) {
   return filename.str();
 }
 
-std::string machine_jet_path(machine_t *machine, satom_t index) {
+std::string machine_jet_dir(machine_t *machine, satom_t index) {
   std::ostringstream filename;
-  filename << machine_path(machine) << "/" << machine_jet_file(machine, index);
+  filename << machine_path(machine);
   return filename.str();
 }
 
-// For reference:
-// extern noun_t
-// fib(noun_t n) {
-//   ASSERT(noun_is_valid_atom(n, machine->heap), "noun_is_valid_atom(n, "
-//          "machine->heap)\n");
-
-//   noun_t f0 = _0;
-//   noun_t f1 = _1;
-//   noun_t counter = _0;
-//   while (true) {
-//     if (NOUN_EQUALS(atom_equals(n, counter), _YES))
-//       return f0;
-//     else {
-//       counter = atom_increment(counter);
-//       noun_t sum = atom_add(f0, f1);
-//       f0 = f1;
-//       f1 = sum;
-//     }
-//   }
-// }
+std::string machine_jet_path(machine_t *machine, satom_t index) {
+  std::ostringstream filename;
+  filename << machine_jet_dir(machine, index) << 
+    "/" << machine_jet_file(machine, index);
+  return filename.str();
+}
 
 static inline noun_t
 noun_nop(noun_t noun) {
@@ -392,7 +397,9 @@ namespace jit {
       root_t *local_variable_index_map;
       root_t *args_placeholder;
       root_t *loop_body_placeholder;
+#if ARKHAM_LLVM
       llvm_t *m_llvm;
+#endif
       // Failure information:
       const char *predicate;
       const char *failure_message;
@@ -426,7 +433,9 @@ namespace jit {
         current_stack_index = -1;
         args_root = root_new(heap, _UNDEFINED);
 
+#if ARKHAM_LLVM
         m_llvm = llvm_new(module_name.c_str());
+#endif
       }
 
       ~Environment() {
@@ -454,7 +463,9 @@ namespace jit {
 #endif
       }
 
+#if ARKHAM_LLVM
       llvm_t *llvm() { return m_llvm; }
+#endif
 
       void fail(const char *predicate, const char *failure_message,
                 const char *file_name, const char *function_name,
@@ -817,6 +828,9 @@ namespace jit {
         if (ARKHAM_TRACE_LLVM_FUNCTIONS)
           function->dump();
     
+        mkpath(machine_jet_dir(machine, index).c_str(),
+               S_IRUSR | S_IWUSR | S_IXUSR);
+
         std::string filename = machine_jet_path(machine, index);
         std::string error;
         raw_fd_ostream stream(filename.c_str(), error);
@@ -1110,7 +1124,7 @@ namespace jit {
       }
 
     public:
-      Declaration(noun_t local_variable_initial_values) {
+      Declaration(noun_t local_variable_initial_values): inner(NULL) {
         SHARE(local_variable_initial_values, AST_OWNER);
         this->local_variable_initial_values = root_new(machine->heap, local_variable_initial_values);
         this->local_variable_index_map = root_new(machine->heap, _UNDEFINED);
@@ -1122,7 +1136,8 @@ namespace jit {
         UNSHARE(local_variable_initial_values->noun, AST_OWNER);
         root_delete(machine->heap, local_variable_initial_values);
         root_delete(machine->heap, local_variable_index_map);
-        delete inner;
+        if (inner != NULL)
+          delete inner;
       }
 
       void dump(Environment *env, FILE *fp, int indent) {
@@ -1192,13 +1207,14 @@ namespace jit {
       Expression *right;
 
     public:
-      BinaryExpression(enum binop_type type) {
-        this->type = type;
-      }
+      BinaryExpression(enum binop_type type): 
+        type(type), left(NULL), right(NULL) {  }
 
       ~BinaryExpression() {
-        delete left;
-        delete right;
+        if (left != NULL)
+          delete left;
+        if (right != NULL)
+          delete right;
       }
 
       void dump(Environment *env, FILE *fp, int indent) {
@@ -1347,8 +1363,11 @@ namespace jit {
       Expression *subexpr;
 
     public:
+      IncrementExpression(): subexpr(NULL) { }
+
       ~IncrementExpression() {
-        delete subexpr;
+        if (subexpr != NULL)
+          delete subexpr;
       }
 
       void eval_ast(Environment *env) {
@@ -1453,7 +1472,7 @@ namespace jit {
       Expression *subexpr;
 
     public:
-      Store(jit_address_t address) {
+      Store(jit_address_t address): subexpr(NULL) {
         this->address = address;
       }
 
@@ -1583,6 +1602,8 @@ namespace jit {
       Iteration *iteration;
 
     public:
+      Loop(): test(NULL), result(NULL), iteration(NULL) { }
+
       ~Loop() {
         if (test != NULL)
           delete test;
@@ -1983,9 +2004,11 @@ Node *transform(noun_t rt) {
   return NULL;
 }
 
+#if ARKHAM_LLVM
 // TODO: More jet slots
 static llvm_t *compiled_formulas[16];
 static llvm_t undefined_compiled_formula;
+#endif
 
 noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
   satom_t index;
@@ -1995,8 +2018,10 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
 
   index = NOUN_AS_SATOM(hint);
   
+#if ARKHAM_LLVM
   if (index > (sizeof(compiled_formulas) / sizeof(compiled_formulas[0])))
     return _UNDEFINED; //XXX: log
+#endif
 
   Node *ast = NULL;
   noun_t result = _UNDEFINED;
@@ -2043,7 +2068,9 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
   ast = transform(formula);
 
   if (ast == NULL) {
+#if ARKHAM_LLVM
     compiled_formulas[index] = &undefined_compiled_formula;
+#endif
     goto done;
   }
   
@@ -2081,8 +2108,10 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
 
  done:
 
+#if ARKHAM_LLVM
   if (NOUN_IS_UNDEFINED(result))
     compiled_formulas[index] = &undefined_compiled_formula;
+#endif
 
   if (ast != NULL)
     delete ast;
@@ -2091,51 +2120,6 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
 
   return result;
 }
-
-// QQQ: remove
-// Node *dec_ast(Environment *env) {
-//   heap_t *heap = machine->heap;
-
-//   Declaration *decl_counter = new Declaration(_0); {
-//     Loop *loop = new Loop();
-//     /**/ decl_counter->set_inner(loop); {
-//       BinaryExpression *eq = new BinaryExpression(binop_eq_type);
-//       /**/ loop->set_test(eq); {
-//         Load *eq_left = new Load(7);
-//         /**/ eq->set_left(eq_left);
-//       } {
-//         IncrementExpression *eq_right = new IncrementExpression();
-//         /**/ eq->set_right(eq_right); {
-//           Load *load_6 = new Load(6);
-//           /**/ eq_right->set_subexpr(load_6);
-//         }
-//       }
-//     } {
-//       Load *result = new Load(6);
-//       /**/ loop->set_result(result);
-//     } {
-//       Iteration *iteration = new Iteration();
-//       /**/ loop->set_iteration(iteration); {
-//         Store *store_6 = new Store(6);
-//         /**/ iteration->add_store(store_6); {
-//           IncrementExpression *inc_6 = new IncrementExpression();
-//           /**/ store_6->set_subexpr(inc_6); {
-//             Load *load_6 = new Load(6);
-//             /**/ inc_6->set_subexpr(load_6);
-//           }
-//         }
-//       } {
-//         Store *store_7 = new Store(7);
-//         /**/ iteration->add_store(store_7); {
-//           Load *load_7 = new Load(7);
-//           /**/ store_7->set_subexpr(load_7);
-//         }
-//       }
-//     }
-//   }
-
-//   return decl_counter;
-// }
 
 // QQQ: remove
 // Node *fib_ast(Environment *env) {

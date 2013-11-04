@@ -1216,17 +1216,30 @@ atom_add(noun_t n1, noun_t n2) {
 
   heap_t *heap = machine_get()->heap;
   batom_t *sum;
+  bool n2_is_satom = NOUN_IS_SATOM(n2);
+  satom_t n2_satom;
+  mpz_t n2_val;
 
-  ///XXXX: old space
+  if (n2_is_satom)
+    n2_satom = noun_as_satom(n2);
+  else {
+    batom_t *batom = NOUN_AS_BATOM(n2);
+    mpz_init(batom->val);
+    mpz_set(batom->val, n2_val);
+  }
+
+  // TODO: Have a "TRY_BATOMS" which can fail (to avoid copying the mpz_t)
+  BATOMS(1);
   if (NOUN_IS_SATOM(n1))
-    sum = batom_new_ulong_old_space(heap, noun_as_satom(n1));
+    sum = NOUN_AS_BATOM(BATOM_ULONG(NOUN_AS_SATOM(n1)));
   else
-    sum = batom_new_old_space(heap, noun_as_batom(n1)->val, /* clear */ false);
+    sum = NOUN_AS_BATOM(BATOM(NOUN_AS_BATOM(n1)->val, /* clear */ false));
+  END_BATOMS();
 
-  if (NOUN_IS_SATOM(n2))
-    mpz_add_ui(sum->val, sum->val, noun_as_satom(n2));
+  if (n2_is_satom)
+    mpz_add_ui(sum->val, sum->val, n2_satom);
   else
-    mpz_add(sum->val, sum->val, noun_as_batom(n2)->val);
+    mpz_add(sum->val, sum->val, n2_val);
   
   return BATOM_AS_NOUN(sum);
 }

@@ -1747,7 +1747,7 @@ namespace jit {
 
 using namespace jit::rlyeh;
 
-Node *transform(noun_t rt);
+Node *rlyeh(noun_t rt);
 
 #define T_ENTER(n) if (ARKHAM_TRACE_TRANSFORM) do { \
   fprintf(machine->trace_file, "enter %s: ", __FUNCTION__); \
@@ -1761,10 +1761,10 @@ Node *transform(noun_t rt);
   fprintf(machine->trace_file, "\n"); \
 } while (false)
 
-Declaration *transform_decl(noun_t rt) {
+Declaration *rlyeh_decl(noun_t rt) {
   T_ENTER(rt);
 
-  Node *inner = transform(R(rt));
+  Node *inner = rlyeh(R(rt));
 
   if (inner != NULL) {
     Declaration *decl = new Declaration(R(L(rt)));
@@ -1776,7 +1776,7 @@ Declaration *transform_decl(noun_t rt) {
   return NULL;
 }
 
-Loop *transform_simple_loop(noun_t rt) {
+Loop *rlyeh_simple_loop(noun_t rt) {
   T_ENTER(rt);
 
   if (!NOUN_IS_CELL(rt))
@@ -1790,18 +1790,18 @@ Loop *transform_simple_loop(noun_t rt) {
 
   noun_t rl = L(r);
 
-  Node *test = transform(rl);
+  Node *test = rlyeh(rl);
   Node *yes = NULL;
   Node *no = NULL;
 
   Expression *test_expr = dynamic_cast<Expression *>(test);
   if (test_expr != NULL) {
       noun_t rr = R(r);
-      yes = transform(L(rr));
+      yes = rlyeh(L(rr));
 
       Expression *yes_expr = dynamic_cast<Expression *>(yes);
       if (yes != NULL) {
-        no = transform(R(rr));
+        no = rlyeh(R(rr));
 
         Iteration *no_iter = dynamic_cast<Iteration *>(no);
         if (no != NULL) {
@@ -1832,7 +1832,7 @@ Loop *transform_simple_loop(noun_t rt) {
   return NULL;
 }
 
-Load *transform_load(noun_t rt) {
+Load *rlyeh_load(noun_t rt) {
   T_ENTER(rt);
 
   if (NOUN_IS_SATOM(rt)) {
@@ -1843,10 +1843,10 @@ Load *transform_load(noun_t rt) {
     return NULL;
 }
 
-IncrementExpression *transform_inc(noun_t rt) {
+IncrementExpression *rlyeh_inc(noun_t rt) {
   T_ENTER(rt);
 
-  Node *sub = transform(rt);
+  Node *sub = rlyeh(rt);
 
   Expression *sub_expr = dynamic_cast<Expression *>(sub);
   if (sub_expr != NULL) {
@@ -1859,15 +1859,15 @@ IncrementExpression *transform_inc(noun_t rt) {
   return NULL;
 }
 
-BinaryExpression *transform_binop(noun_t rt, enum binop_type type) {
+BinaryExpression *rlyeh_binop(noun_t rt, enum binop_type type) {
   T_ENTER(rt);
 
-  Node *left = transform(L(rt));
+  Node *left = rlyeh(L(rt));
   Node *right = NULL;
 
   Expression *left_expr = dynamic_cast<Expression *>(left);
   if (left != NULL) {
-    Node *right = transform(R(rt));
+    Node *right = rlyeh(R(rt));
 
     Expression *right_expr = dynamic_cast<Expression *>(right);
     if (right != NULL) {
@@ -1890,10 +1890,10 @@ BinaryExpression *transform_binop(noun_t rt, enum binop_type type) {
   return NULL;
 }
 
-Store *transform_store(noun_t rt, jit_address_t address) {
+Store *rlyeh_store(noun_t rt, jit_address_t address) {
   T_ENTER(rt);
 
-  Node *sub = transform(rt);
+  Node *sub = rlyeh(rt);
 
   Expression *sub_expr = dynamic_cast<Expression *>(sub);
   if (sub_expr != NULL) {
@@ -1906,7 +1906,7 @@ Store *transform_store(noun_t rt, jit_address_t address) {
   return NULL;
 }
 
-bool transform_iter_impl(noun_t rt, jit_address_t address,
+bool rlyeh_iter_impl(noun_t rt, jit_address_t address,
                          Iteration *iteration) {
   T_ENTER(rt);
 
@@ -1919,10 +1919,10 @@ bool transform_iter_impl(noun_t rt, jit_address_t address,
   bool result;
 
   if (NOUN_IS_CELL(l)) {
-    result = transform_iter_impl(l, address * 2, iteration) && 
-      transform_iter_impl(R(rt), address * 2 + 1, iteration);
+    result = rlyeh_iter_impl(l, address * 2, iteration) && 
+      rlyeh_iter_impl(R(rt), address * 2 + 1, iteration);
   } else {
-    Store *store = transform_store(rt, address);
+    Store *store = rlyeh_store(rt, address);
 
     if (store != NULL) 
       iteration->add_store(store);
@@ -1935,7 +1935,7 @@ bool transform_iter_impl(noun_t rt, jit_address_t address,
   return result;
 }
 
-Iteration *transform_iter(noun_t rt) {
+Iteration *rlyeh_iter(noun_t rt) {
   T_ENTER(rt);
 
   if (NOUN_EQUALS(L(rt), _2)) {
@@ -1945,7 +1945,7 @@ Iteration *transform_iter(noun_t rt) {
     if (NOUN_IS_CELL(rl) && NOUN_EQUALS(L(rl), _0) && NOUN_EQUALS(R(rl), _2)) {
       Iteration *iteration = new Iteration();
 
-      if (!transform_iter_impl(R(r), 3, iteration)) {
+      if (!rlyeh_iter_impl(R(r), 3, iteration)) {
         delete iteration;
         return NULL;
       } else {
@@ -1958,7 +1958,7 @@ Iteration *transform_iter(noun_t rt) {
   return NULL;
 }
 
-Node *transform(noun_t rt) {
+Node *rlyeh(noun_t rt) {
   T_ENTER(rt);
 
   heap_t *heap = machine->heap;
@@ -1969,11 +1969,11 @@ Node *transform(noun_t rt) {
       noun_t r = R(rt);
       switch (NOUN_AS_SATOM(l)) {
       case 0:
-        return transform_load(r);
+        return rlyeh_load(r);
       case 4:
-        return transform_inc(r);
+        return rlyeh_inc(r);
       case 5:
-        return transform_binop(r, binop_eq_type);
+        return rlyeh_binop(r, binop_eq_type);
       case 8:
         if (NOUN_IS_CELL(r)) {
           noun_t rl = L(r);
@@ -1992,15 +1992,15 @@ Node *transform(noun_t rt) {
                   || !NOUN_EQUALS(R(rrrr), _1))
                 goto is_decl;
 
-              return transform_simple_loop(R(rl));
+              return rlyeh_simple_loop(R(rl));
 
             is_decl:
-              return transform_decl(r);
+              return rlyeh_decl(r);
             }
           }
         }
       case 9:
-        return transform_iter(r);
+        return rlyeh_iter(r);
       }
     }
   }
@@ -2027,7 +2027,7 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
     return _UNDEFINED; //XXX: log
 #endif
 
-  Node *rlyeh = NULL;
+  Node *rlyeh_formula = NULL;
   noun_t result = _UNDEFINED;
   Environment *env = NULL;
 
@@ -2069,9 +2069,11 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
   }
 #endif
 
-  rlyeh = transform(formula);
+  rlyeh_formula = rlyeh(formula);
 
-  if (rlyeh == NULL) {
+  printf("rlyeh=%p\n", rlyeh_formula);//QQQ
+
+  if (rlyeh_formula == NULL) {
 #if ARKHAM_LLVM
     compiled_formulas[index] = &undefined_compiled_formula;
 #endif
@@ -2080,7 +2082,7 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
   
   env = new Environment(machine_jet_file(machine, index));
 
-  env->prep(rlyeh);
+  env->prep(rlyeh_formula);
 
   if (env->failed) {
     INFO("Preparation failed: %" SATOM_FMT "\n", NOUN_AS_SATOM(hint));
@@ -2088,10 +2090,10 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
   }
 
   if (ARKHAM_TRACE_RLYEH)
-    rlyeh->dump(env, machine->trace_file, 0);
+    rlyeh_formula->dump(env, machine->trace_file, 0);
 
 #if ARKHAM_LLVM
-  compiled_formula = env->compile(rlyeh, index);
+  compiled_formula = env->compile(rlyeh_formula, index);
 
   if (env->failed) {
     INFO("Compilation failed: %" SATOM_FMT "\n", NOUN_AS_SATOM(hint));
@@ -2104,7 +2106,7 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
 
   result = (compiled_formula->fn)(subject); // XXX: unshare?
 #else
-  result = env->eval_rlyeh(rlyeh, subject);
+  result = env->eval_rlyeh(rlyeh_formula, subject);
 
   if (env->failed)
     INFO("Evaluation failed: %" SATOM_FMT "\n", NOUN_AS_SATOM(hint));
@@ -2117,8 +2119,8 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
     compiled_formulas[index] = &undefined_compiled_formula;
 #endif
 
-  if (rlyeh != NULL)
-    delete rlyeh;
+  if (rlyeh_formula != NULL)
+    delete rlyeh_formula;
   if (env != NULL)
     delete env;
 

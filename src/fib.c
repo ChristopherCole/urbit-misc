@@ -2,9 +2,6 @@
 
 extern noun_t
 singleton(noun_t n) {
-  ASSERT(noun_is_valid_atom(n, machine_get()->heap), "noun_is_valid_atom(n, "
-         "machine->heap)\n");
-
   noun_t f0 = _0;
   noun_t f1 = _1;
   noun_t counter = _0;

@@ -82,8 +82,6 @@ typedef Fnv32_t Fnv_t;
 #error Unsupported pointer size (require 32 or 64 bits)
 #endif
 
-typedef struct { satom_t value; } noun_t;
-
 #define ARKHAM_PADDING (ALLOC_DEBUG && !INLINE_REFS) || \
   (!ALLOC_DEBUG && INLINE_REFS)
 
@@ -109,31 +107,32 @@ typedef struct noun_metainfo {
 #endif
 } noun_metainfo_t;
 
-typedef struct cell_base {
+typedef struct { satom_t value; } noun_t;
+
+typedef struct old_space_noun {
+  noun_metainfo_t metainfo;
+  noun_t noun;
+} old_space_noun_t;
+
+typedef struct cell {
   noun_t left;
   noun_t right;
-} cell_base_t;
-
-// TODO: Remove metainfo from cell and batom struct: put on the outside
-typedef struct cell {
-  noun_metainfo_t metainfo;
-  cell_base_t base;
 } cell_t;
 
-#if !INLINE_REFS
-typedef struct fat_cell {
-  satom_t refs;
-  satom_t _padding;
-  cell_t cell;
-} fat_cell_t;
-#endif
-
-// TODO: Remove metainfo from cell and batom struct: put on the outside
-typedef struct batom {
+typedef struct old_space_cell {
   noun_metainfo_t metainfo;
+  cell_t cell;
+} old_space_cell_t;
+
+typedef struct batom {
   mpz_t val;
-  bool forwarded;
+  bool forwarded; //XXXX (use tag on mpz_t)
 } batom_t;
+
+typedef struct old_space_batom {
+  noun_metainfo_t metainfo;
+  batom_t batom;
+} old_space_batom_t;
 
 #if ARKHAM_LLVM
 void llvm_init_global();
@@ -203,12 +202,12 @@ typedef struct heap {
   // A circular buffer of freed cells:
   unsigned int cell_free_list_start;
   unsigned int cell_free_list_size;
-  cell_t *cell_free_list[CELL_FREE_LIST_SIZE];
+  old_space_cell_t *cell_free_list[CELL_FREE_LIST_SIZE];
 #endif
 #if SHARED_CELL_LIST
   // TODO: Keep the pointers to cell_t* as well (for updating in place).
   unsigned int shared_cell_list_size;
-  cell_t *shared_cell_list[SHARED_CELL_LIST_SIZE];
+  old_space_cell_t *shared_cell_list[SHARED_CELL_LIST_SIZE];
 #endif
 } heap_t;
 
@@ -233,10 +232,9 @@ typedef struct machine {
 #define NOUN_NOT_SATOM_FLAG 1
 #define NOUN_CELL_FLAG 2
 #define NOUN_FLAGS (NOUN_NOT_SATOM_FLAG | NOUN_CELL_FLAG)
-// TODO: Remove metainfo from cell and batom struct: put on the outside
-#define NOUN_AS_PTR(noun) ((noun).value & ~(satom_t)NOUN_FLAGS)
-// TODO: Remove metainfo from cell and batom struct: put on the outside
-#define NOUN_AS_NOUN_METAINFO(noun) ((noun_metainfo_t *)NOUN_AS_PTR(noun))
+#define NOUN_GET_RAW_PTR(noun) ((noun).value & ~(satom_t)NOUN_FLAGS)
+#define NOUN_GET_OLD_SPACE(noun) noun_get_old_space(noun)
+#define NOUN_GET_METAINFO(noun) (&(NOUN_GET_OLD_SPACE(noun)->metainfo))
 #define CELL_AS_NOUN(cell) ((noun_t){ .value = (satom_t)(cell) | \
   NOUN_CELL_FLAG | NOUN_NOT_SATOM_FLAG })
 #define NOUN_EQUALS(n1, n2) ((n1).value == (n2).value)
@@ -255,8 +253,8 @@ typedef struct machine {
 
 #define _FORWARDED_MARKER BATOM_AS_NOUN((void *)(-1 & ~NOUN_FLAGS))
 #define _UNDEFINED BATOM_AS_NOUN(NULL)
-#define NOUN_AS_CELL(noun) ((cell_t *)NOUN_AS_NOUN_METAINFO(noun))
-#define NOUN_AS_BATOM(noun) ((batom_t *)NOUN_AS_NOUN_METAINFO(noun))
+#define NOUN_AS_CELL(noun) ((cell_t *)NOUN_GET_RAW_PTR(noun))
+#define NOUN_AS_BATOM(noun) ((batom_t *)NOUN_GET_RAW_PTR(noun))
 #define NOUN_IS_UNDEFINED(noun) NOUN_EQUALS(noun, _UNDEFINED)
 #define NOUN_IS_DEFINED(noun) !NOUN_EQUALS(noun, _UNDEFINED)
 #define NOUN_IS_FORWARDED_MARKER(noun) NOUN_EQUALS(noun, _FORWARDED_MARKER)
@@ -275,6 +273,22 @@ typedef struct machine {
   left, right))
 #define END_CELLS() ASSERT(_requested == (cellp[0] - _first), \
   "Wrong number of allocations\n");
+#define BATOMS(count) \
+  batom_t *batomp[1]; \
+  int _requested = count; \
+  bool possible_data_motion = false; \
+  batomp[0] = heap_alloc_batoms(heap, count, &possible_data_motion); \
+  batom_t *_first = batomp[0]
+#define BATOMS_ARG batomp
+#define BATOMS_DECL batom_t *batomp[1]
+#define BATOM(val, clear) BATOM_AS_NOUN(batom_new_nursery(&(batomp[0]), \
+  val, clear))
+#define BATOM_ULONG(val) BATOM_AS_NOUN(batom_new_ulong_nursery(&(batomp[0]), \
+  val))
+#define BATOM_COPY(batom) BATOM_AS_NOUN(batom_copy_nursery(&(batomp[0]), \
+  batom))
+#define END_BATOMS() ASSERT(_requested == (batomp[0] - _first), \
+  "Wrong number of allocations\n");
 #else /* #if !ARKHAM_ASSERT */
 #define CELLS(count) \
   cell_t *cellp[1]; \
@@ -286,6 +300,19 @@ typedef struct machine {
 #define CELL(left, right) CELL_AS_NOUN(cell_new_nursery(&(cellp[0]), \
   left, right))
 #define END_CELLS() do { } while (false)
+#define BATOMS(count) \
+  batom_t *batomp[1]; \
+  bool possible_data_motion = false; \
+  batomp[0] = heap_alloc_batoms(heap, count, &possible_data_motion);
+#define BATOMS_ARG batomp
+#define BATOMS_DECL batom_t *batomp[1]
+#define BATOM(val, clear) BATOM_AS_NOUN(batom_new_nursery(&(batomp[0]), \
+  val, clear))
+#define BATOM_ULONG(val) BATOM_AS_NOUN(batom_new_ulong_nursery(&(batomp[0]), \
+  val))
+#define BATOM_COPY(batom) BATOM_AS_NOUN(batom_copy_nursery(&(batomp[0]), \
+  batom))
+#define END_BATOMS() do { } while (false)
 #endif /* #if ARKHAM_ASSERT */
 #else /* #if !ARKHAM_USE_NURSERY */
 #define CELLS(count) do { } while (false)
@@ -294,6 +321,13 @@ typedef struct machine {
 #define CELLS_DECL void *cellp
 #define CELL(left, right) CELL_AS_NOUN(cell_new(heap, left, right))
 #define END_CELLS() do { } while (false)
+#define BATOMS(count) do { } while (false)
+#define BATOMS_ARG NULL
+#define BATOMS_DECL void *batomp
+#define BATOM(val, clear) BATOM_AS_NOUN(batom_new_old_space(heap, val, clear))
+#define BATOM_ULONG(val) BATOM_AS_NOUN(batom_new_ulong_old_space(heap, val))
+#define BATOM_COPY(batom) BATOM_AS_NOUN(batom_copy_old_space(heap, batom))
+#define END_BATOMS() do { } while (false)
 #endif /* #if ARKHAM_USE_NURSERY */
 
 /* Owners from the "root set": */
@@ -307,8 +341,8 @@ typedef struct machine {
 #define HEAP_OWNER ((noun_metainfo_t *)4)
 /* For the environment during compilation */
 #define ENV_OWNER ((noun_metainfo_t *)5)
-/* For the AST during compilation */
-#define AST_OWNER ((noun_metainfo_t *)6)
+/* For the RLYEH during compilation */
+#define RLYEH_OWNER ((noun_metainfo_t *)6)
 /* For the local variables during abstract interpretation */
 #define LOCALS_OWNER ((noun_metainfo_t *)7)
 
@@ -366,6 +400,22 @@ noun_get_type(noun_t noun) {
     return batom_type;
 }
 
+#if ARKHAM_USE_NURSERY
+static bool
+heap_is_nursery(heap_t *heap, void *ptr) {
+  return (char*)ptr >= heap->nursery_start && (char*)ptr < heap->nursery_end;
+}
+#endif
+
+static inline old_space_noun_t *
+noun_get_old_space(noun_t noun) {
+  void *ptr = (void *)NOUN_GET_RAW_PTR(noun);
+#if ARKHAM_USE_NURSERY
+  ASSERT0(!heap_is_nursery(machine_get()->heap, ptr));
+#endif
+  return (old_space_noun_t *)((char*)ptr - offsetof(old_space_noun_t, noun));
+}
+
 static inline satom_t
 noun_as_satom(noun_t noun) {
   ASSERT0(noun_get_type(noun) == satom_type);
@@ -392,13 +442,13 @@ noun_as_cell(noun_t noun) {
 static inline noun_t
 noun_get_left(noun_t noun) {
   ASSERT0(noun_get_type(noun) == cell_type);
-  return noun_as_cell(noun)->base.left;
+  return noun_as_cell(noun)->left;
 }
 
 static inline noun_t
 noun_get_right(noun_t noun) {
   ASSERT0(noun_get_type(noun) == cell_type);
-  return noun_as_cell(noun)->base.right;
+  return noun_as_cell(noun)->right;
 }
 
 noun_t cell_set_left(noun_t noun, noun_t left, heap_t *heap);
@@ -417,16 +467,28 @@ void noun_metainfo_print_metainfo(FILE *file, const char *prefix,
 const char *noun_type_to_string(enum noun_type noun_type);
 
 #if ARKHAM_USE_NURSERY
-cell_t *cell_new_nursery(struct cell **cellp, noun_t left, noun_t right);
+cell_t *cell_new_nursery(cell_t **cellp, noun_t left, noun_t right);
 #endif
 
-cell_t *cell_new(heap_t *heap, noun_t left, noun_t right);
+#if ARKHAM_USE_NURSERY
+batom_t *batom_new_nursery(batom_t **batomp, mpz_t val, bool clear);
+#endif
 
-batom_t *batom_new(heap_t *heap, mpz_t val, bool clear);
+#if ARKHAM_USE_NURSERY
+batom_t *batom_new_ulong_nursery(batom_t **batomp, unsigned long val);
+#endif
 
-batom_t *batom_new_ulong(heap_t *heap, unsigned long val);
+#if ARKHAM_USE_NURSERY
+batom_t *batom_copy_nursery(batom_t **batomp, batom_t *batom);
+#endif
 
-batom_t *batom_copy(heap_t *heap, batom_t *batom);
+cell_t *cell_new_old_space(heap_t *heap, noun_t left, noun_t right);
+
+batom_t *batom_new_old_space(heap_t *heap, mpz_t val, bool clear);
+
+batom_t *batom_new_ulong_old_space(heap_t *heap, unsigned long val);
+
+batom_t *batom_copy_old_space(heap_t *heap, batom_t *batom);
 
 bool noun_is_valid_atom(noun_t noun, heap_t *heap);
 

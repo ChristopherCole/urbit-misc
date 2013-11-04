@@ -61,7 +61,7 @@ using namespace llvm;
 #define ARKHAM_TRACE_DISASSEMBLY false
 #define ARKHAM_TRACE_TRANSFORM false
 #define ARKHAM_TRACE_LLVM_FUNCTIONS false
-#define ARKHAM_TRACE_AST false
+#define ARKHAM_TRACE_RLYEH false
 
 #define FUNCTION_NAME "singleton"
 
@@ -313,7 +313,7 @@ typedef uint32_t jit_index_t;
 #define JIT_STACK_MAX UINT16_MAX
 
 namespace jit {
-  namespace ast {
+  namespace rlyeh {
     class LocalVariable {
     public:
       char *name;
@@ -380,7 +380,7 @@ namespace jit {
       virtual ~Node() { }
       virtual void prep(Environment *env) = 0;
       virtual void dump(Environment *env, FILE *fp, int indent) = 0;
-      virtual void eval_ast(Environment *env) = 0;
+      virtual void eval_rlyeh(Environment *env) = 0;
 #if ARKHAM_LLVM
       virtual Value *compile(Environment *env) = 0;
 #endif
@@ -421,11 +421,13 @@ namespace jit {
         heap_t *heap = machine->heap;
 
         // Use an "impossible" value as the placeholder:
-        args_placeholder = root_new(heap, BATOM_AS_NOUN(batom_new_ulong(heap,
-            JIT_INDEX_MAX + 1UL)));
+        BATOMS(2);
+        args_placeholder = root_new(heap, 
+                                    BATOM_ULONG(JIT_INDEX_MAX + 1UL));
         SHARE(args_placeholder->noun, ENV_OWNER);
         loop_body_placeholder = root_new(heap,
-            BATOM_AS_NOUN(batom_new_ulong(heap, JIT_INDEX_MAX + 2UL)));
+                                         BATOM_ULONG(JIT_INDEX_MAX + 2UL));
+        END_BATOMS();
         SHARE(loop_body_placeholder->noun, ENV_OWNER);
         local_variable_index_map = root_new(heap, args_placeholder->noun);
         SHARE(local_variable_index_map->noun, ENV_OWNER);
@@ -761,14 +763,14 @@ namespace jit {
         }
       }
 
-      noun_t eval_ast(Node *oper, noun_t args) {
+      noun_t eval_rlyeh(Node *oper, noun_t args) {
         ENV_CHECK(this, NOUN_IS_UNDEFINED(args) == 
                   NOUN_IS_UNDEFINED(args_root->noun), "Arguments mismatch",
                   _UNDEFINED);
 
         initialize_args(args, args_root->noun);
 
-        oper->eval_ast(this);
+        oper->eval_rlyeh(this);
     
         noun_t result = failed ? _UNDEFINED : get_stack(0);
         SHARE(result, ENV_OWNER);
@@ -838,6 +840,7 @@ namespace jit {
           INFO("Could not open bitcode file for writing '%s': '%s'\n",
                filename.c_str(), error.c_str());
         } else {
+          // TODO: Output Rlyeh when saving bitcode
           INFO("Wrote bitcode to file '%s'\n", filename.c_str());
           WriteBitcodeToFile(llvm()->module, stream);
         }
@@ -1125,15 +1128,16 @@ namespace jit {
 
     public:
       Declaration(noun_t local_variable_initial_values): inner(NULL) {
-        SHARE(local_variable_initial_values, AST_OWNER);
-        this->local_variable_initial_values = root_new(machine->heap, local_variable_initial_values);
+        SHARE(local_variable_initial_values, RLYEH_OWNER);
+        this->local_variable_initial_values = 
+          root_new(machine->heap, local_variable_initial_values);
         this->local_variable_index_map = root_new(machine->heap, _UNDEFINED);
       }
 
       ~Declaration() {
         if (NOUN_IS_DEFINED(local_variable_index_map->noun))
-          UNSHARE(local_variable_index_map->noun, AST_OWNER);
-        UNSHARE(local_variable_initial_values->noun, AST_OWNER);
+          UNSHARE(local_variable_index_map->noun, RLYEH_OWNER);
+        UNSHARE(local_variable_initial_values->noun, RLYEH_OWNER);
         root_delete(machine->heap, local_variable_initial_values);
         root_delete(machine->heap, local_variable_index_map);
         if (inner != NULL)
@@ -1159,7 +1163,7 @@ namespace jit {
           CELLS(pre_prep_impl(env, local_variable_index_map->noun));
           local_variable_index_map->noun = prep_impl(env,
             local_variable_initial_values->noun, CELLS_ARG);
-          SHARE(local_variable_index_map->noun, AST_OWNER);
+          SHARE(local_variable_index_map->noun, RLYEH_OWNER);
         }
 
         {
@@ -1181,11 +1185,11 @@ namespace jit {
       }
 #endif /* ARKHAM_LLVM */
 
-      void eval_ast(Environment *env) {
+      void eval_rlyeh(Environment *env) {
         if (env->failed) return;
         eval_impl(env, local_variable_initial_values->noun,
                   local_variable_index_map->noun);
-        inner->eval_ast(env);
+        inner->eval_rlyeh(env);
       }
 
       void set_inner(Node *inner) {
@@ -1322,11 +1326,11 @@ namespace jit {
       }
 #endif /* ARKHAM_LLVM */
 
-      void eval_ast(Environment *env) {
+      void eval_rlyeh(Environment *env) {
         if (env->failed) return;
 
-        left->eval_ast(env);
-        right->eval_ast(env);
+        left->eval_rlyeh(env);
+        right->eval_rlyeh(env);
     
         noun_t n1 = env->get_stack(stack_index);
         noun_t n2 = env->get_stack(stack_index + 1);
@@ -1370,10 +1374,10 @@ namespace jit {
           delete subexpr;
       }
 
-      void eval_ast(Environment *env) {
+      void eval_rlyeh(Environment *env) {
         if (env->failed) return;
 
-        subexpr->eval_ast(env);
+        subexpr->eval_rlyeh(env);
     
         env->set_stack(stack_index, atom_increment(
           env->get_stack(stack_index)));
@@ -1451,7 +1455,7 @@ namespace jit {
           env->max_stack_index = env->current_stack_index;
       }
 
-      void eval_ast(Environment *env) {
+      void eval_rlyeh(Environment *env) {
         if (env->failed) return;
 
         env->set_stack(stack_index, env->get_local(env->get_index_of_address(
@@ -1499,10 +1503,10 @@ namespace jit {
         stack_index = env->current_stack_index--;
       }
 
-      void eval_ast(Environment *env) {
+      void eval_rlyeh(Environment *env) {
         if (env->failed) return;
 
-        subexpr->eval_ast(env);
+        subexpr->eval_rlyeh(env);
 
         env->set_local(env->get_index_of_address(address), env->get_stack(
           stack_index));
@@ -1564,12 +1568,12 @@ namespace jit {
           (*it)->prep(env);
       }
 
-      void eval_ast(Environment *env) {
+      void eval_rlyeh(Environment *env) {
         if (env->failed) return;
 
         for(std::vector<Store *>::iterator it = stores.begin();
             it != stores.end(); ++it)
-          (*it)->eval_ast(env);
+          (*it)->eval_rlyeh(env);
         // Copy the locals for the next iteration:
         env->copy_locals();
       }
@@ -1649,20 +1653,20 @@ namespace jit {
         iteration->prep(env);
       }
 
-      void eval_ast(Environment *env) {
+      void eval_rlyeh(Environment *env) {
         if (env->failed) return;
 
         while (true) {
-          test->eval_ast(env);
+          test->eval_rlyeh(env);
 
           if (env->failed) return;
           bool is_eq = NOUN_EQUALS(env->get_stack(stack_index), _YES);
           env->set_stack(stack_index, _UNDEFINED);
 
           if (is_eq)
-            result->eval_ast(env);
+            result->eval_rlyeh(env);
           else
-            iteration->eval_ast(env);
+            iteration->eval_rlyeh(env);
         }
       }
 
@@ -1738,10 +1742,10 @@ namespace jit {
         iteration->outer = this;
       }
     }; // class Loop
-  } // namespace ast
+  } // namespace rlyeh
 } // namespace jit
 
-using namespace jit::ast;
+using namespace jit::rlyeh;
 
 Node *transform(noun_t rt);
 
@@ -2023,7 +2027,7 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
     return _UNDEFINED; //XXX: log
 #endif
 
-  Node *ast = NULL;
+  Node *rlyeh = NULL;
   noun_t result = _UNDEFINED;
   Environment *env = NULL;
 
@@ -2065,9 +2069,9 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
   }
 #endif
 
-  ast = transform(formula);
+  rlyeh = transform(formula);
 
-  if (ast == NULL) {
+  if (rlyeh == NULL) {
 #if ARKHAM_LLVM
     compiled_formulas[index] = &undefined_compiled_formula;
 #endif
@@ -2076,18 +2080,18 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
   
   env = new Environment(machine_jet_file(machine, index));
 
-  env->prep(ast);
+  env->prep(rlyeh);
 
   if (env->failed) {
     INFO("Preparation failed: %" SATOM_FMT "\n", NOUN_AS_SATOM(hint));
     goto done;
   }
 
-  if (ARKHAM_TRACE_AST)
-    ast->dump(env, machine->trace_file, 0);
+  if (ARKHAM_TRACE_RLYEH)
+    rlyeh->dump(env, machine->trace_file, 0);
 
 #if ARKHAM_LLVM
-  compiled_formula = env->compile(ast, index);
+  compiled_formula = env->compile(rlyeh, index);
 
   if (env->failed) {
     INFO("Compilation failed: %" SATOM_FMT "\n", NOUN_AS_SATOM(hint));
@@ -2100,7 +2104,7 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
 
   result = (compiled_formula->fn)(subject); // XXX: unshare?
 #else
-  result = env->eval_ast(ast, subject);
+  result = env->eval_rlyeh(rlyeh, subject);
 
   if (env->failed)
     INFO("Evaluation failed: %" SATOM_FMT "\n", NOUN_AS_SATOM(hint));
@@ -2113,8 +2117,8 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
     compiled_formulas[index] = &undefined_compiled_formula;
 #endif
 
-  if (ast != NULL)
-    delete ast;
+  if (rlyeh != NULL)
+    delete rlyeh;
   if (env != NULL)
     delete env;
 
@@ -2122,7 +2126,7 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
 }
 
 // QQQ: remove
-// Node *fib_ast(Environment *env) {
+// Node *fib_rlyeh(Environment *env) {
 //   heap_t *heap = machine->heap;
 //   CELLS(1);
 

@@ -34,9 +34,9 @@ ifeq ($(UNAME_S),Darwin)
   PACKAGE_ROOT= /opt/local
   LLVM_ROOT= /Users/Dad/Packages/llvm/install
 #  LLVM_ROOT= ${PACKAGE_ROOT}
-  CC_FLAGS = -I${LLVM_ROOT}/include -I${PACKAGE_ROOT}/include
-  CXX_FLAGS = -I${LLVM_ROOT}/include -I${PACKAGE_ROOT}/include
-  CXX_LINK_FLAGS = -L${LLVM_ROOT}/lib -L${PACKAGE_ROOT}/lib -lc++
+  CC_FLAGS = -I${LLVM_ROOT}/include -I${PACKAGE_ROOT}/include -I/usr/local/include
+  CXX_FLAGS = -I${LLVM_ROOT}/include -I${PACKAGE_ROOT}/include -I/usr/local/include
+  CXX_LINK_FLAGS = -L${LLVM_ROOT}/lib -L${PACKAGE_ROOT}/lib -L/usr/local/lib -lc++
 endif
 
 # -lprofiler 

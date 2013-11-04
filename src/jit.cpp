@@ -1761,6 +1761,11 @@ Node *rlyeh(noun_t rt);
   fprintf(machine->trace_file, "\n"); \
 } while (false)
 
+#define RLYEH_FAIL() do { \
+  printf("Rlyeh failed: file %s function %s line %d\n", __FILE__, __FUNCTION__, __LINE__); \
+  return NULL; \
+} while(false)
+
 Declaration *rlyeh_decl(noun_t rt) {
   T_ENTER(rt);
 
@@ -1773,20 +1778,20 @@ Declaration *rlyeh_decl(noun_t rt) {
     return decl;
   }
 
-  return NULL;
+  RLYEH_FAIL();
 }
 
 Loop *rlyeh_simple_loop(noun_t rt) {
   T_ENTER(rt);
 
   if (!NOUN_IS_CELL(rt))
-    return NULL;
+    RLYEH_FAIL();
 
   noun_t l = L(rt);
   noun_t r = R(rt);
 
   if (!NOUN_IS_CELL(r))
-    return NULL;
+    RLYEH_FAIL();
 
   noun_t rl = L(r);
 
@@ -1829,7 +1834,7 @@ Loop *rlyeh_simple_loop(noun_t rt) {
   if (yes != NULL) delete yes;
   if (no != NULL) delete no;
 
-  return NULL;
+  RLYEH_FAIL();
 }
 
 Load *rlyeh_load(noun_t rt) {
@@ -1840,7 +1845,7 @@ Load *rlyeh_load(noun_t rt) {
     return new Load(NOUN_AS_SATOM(rt));
   }
   else
-    return NULL;
+    RLYEH_FAIL();
 }
 
 IncrementExpression *rlyeh_inc(noun_t rt) {
@@ -1856,7 +1861,7 @@ IncrementExpression *rlyeh_inc(noun_t rt) {
     return inc;
   }
 
-  return NULL;
+  RLYEH_FAIL();
 }
 
 BinaryExpression *rlyeh_binop(noun_t rt, enum binop_type type) {
@@ -1887,7 +1892,7 @@ BinaryExpression *rlyeh_binop(noun_t rt, enum binop_type type) {
   if (left != NULL) delete left;
   if (right != NULL) delete right;
 
-  return NULL;
+  RLYEH_FAIL();
 }
 
 Store *rlyeh_store(noun_t rt, jit_address_t address) {
@@ -1903,7 +1908,7 @@ Store *rlyeh_store(noun_t rt, jit_address_t address) {
     return store;
   }
 
-  return NULL;
+  RLYEH_FAIL();
 }
 
 bool rlyeh_iter_impl(noun_t rt, jit_address_t address,
@@ -1947,7 +1952,7 @@ Iteration *rlyeh_iter(noun_t rt) {
 
       if (!rlyeh_iter_impl(R(r), 3, iteration)) {
         delete iteration;
-        return NULL;
+        RLYEH_FAIL();
       } else {
         T_LEAVE(rt);
         return iteration;
@@ -1955,7 +1960,7 @@ Iteration *rlyeh_iter(noun_t rt) {
     }
   }
 
-  return NULL;
+  RLYEH_FAIL();
 }
 
 Node *rlyeh(noun_t rt) {
@@ -2005,7 +2010,7 @@ Node *rlyeh(noun_t rt) {
     }
   }
 
-  return NULL;
+  RLYEH_FAIL();
 }
 
 #if ARKHAM_LLVM

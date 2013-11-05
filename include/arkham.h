@@ -82,8 +82,8 @@ typedef Fnv32_t Fnv_t;
 #error Unsupported pointer size (require 32 or 64 bits)
 #endif
 
-#define ARKHAM_PADDING (ALLOC_DEBUG && !INLINE_REFS) || \
-  (!ALLOC_DEBUG && INLINE_REFS)
+#define ARKHAM_PADDING (ARKHAM_ALLOC_DEBUG && !ARKHAM_INLINE_REFS) || \
+  (!ARKHAM_ALLOC_DEBUG && ARKHAM_INLINE_REFS)
 
 enum noun_type {
   cell_type,
@@ -92,10 +92,11 @@ enum noun_type {
 };
 
 typedef struct noun_metainfo { 
-#if INLINE_REFS
+#if ARKHAM_INLINE_REFS
   satom_t refs;
 #endif
-#if ALLOC_DEBUG
+
+#if ARKHAM_ALLOC_DEBUG
   struct noun_metainfo **owners;
   struct noun_metainfo *next;
   satom_t id;
@@ -115,6 +116,11 @@ typedef struct old_space_noun {
 } old_space_noun_t;
 
 typedef struct cell {
+#if ARKHAM_TRACK_ORIGIN
+  int row;
+  int column;
+#endif
+
   noun_t left;
   noun_t right;
 } cell_t;
@@ -151,7 +157,7 @@ typedef struct root {
 typedef struct write_log {
   noun_t *address;
   noun_t noun;
-#if ALLOC_DEBUG
+#if ARKHAM_ALLOC_DEBUG
   noun_metainfo_t *owner;
 #endif
 } write_log_t;
@@ -192,7 +198,7 @@ typedef struct heap {
   write_log_t *write_log_current;
   write_log_t *write_log_end;
 #endif /* ARKHAM_USE_NURSERY */
-#if ALLOC_DEBUG
+#if ARKHAM_ALLOC_DEBUG
   // A linked list of all allocated cells:
   unsigned long current_id;
   noun_metainfo_t *first;
@@ -459,7 +465,7 @@ Fnv_t noun_hash(noun_t noun, Fnv_t hash);
 
 void noun_print(FILE *file, noun_t noun, bool brackets, bool metainfo);
 
-#if ALLOC_DEBUG
+#if ARKHAM_ALLOC_DEBUG
 void noun_metainfo_print_metainfo(FILE *file, const char *prefix,
   noun_metainfo_t *noun_metainfo, const char *suffix);
 #endif
@@ -468,6 +474,12 @@ const char *noun_type_to_string(enum noun_type noun_type);
 
 #if ARKHAM_USE_NURSERY
 cell_t *cell_new_nursery(cell_t **cellp, noun_t left, noun_t right);
+#endif
+
+#if ARKHAM_TRACK_ORIGIN
+void cell_copy_origin(cell_t *cell, cell_t *from);
+
+void cell_set_origin(cell_t *cell, int row, int column);
 #endif
 
 #if ARKHAM_USE_NURSERY
@@ -498,7 +510,7 @@ noun_t atom_equals(noun_t n1, noun_t n2);
 
 noun_t atom_increment(noun_t noun);
 
-#if ALLOC_DEBUG
+#if ARKHAM_ALLOC_DEBUG
 noun_t noun_share(noun_t noun, heap_t *heap, noun_metainfo_t *owner);
 
 void noun_unshare(noun_t noun, heap_t *heap, bool toplevel,

@@ -58,11 +58,6 @@ using namespace llvm;
 #include "arkham.h"
 #include "mkpath.h"
 
-#define ARKHAM_TRACE_DISASSEMBLY false
-#define ARKHAM_TRACE_TRANSFORM false
-#define ARKHAM_TRACE_LLVM_FUNCTIONS false
-#define ARKHAM_TRACE_RLYEH false
-
 #define FUNCTION_NAME "singleton"
 
 #define L(noun) noun_get_left(noun)
@@ -285,10 +280,10 @@ noun_nop(noun_t noun) {
 #if ARKHAM_USE_NURSERY
 #define SHARE(n, o) noun_nop(n)
 #define UNSHARE(n, o)
-#elif ALLOC_DEBUG
+#elif ARKHAM_ALLOC_DEBUG
 #define SHARE(n, o) noun_share(n, machine->heap, o)
 #define UNSHARE(n, o) noun_unshare(n, machine->heap, true, o)
-#else /* #if !ARKHAM_USE_NURSERY && !ALLOC_DEBUG */
+#else /* #if !ARKHAM_USE_NURSERY && !ARKHAM_ALLOC_DEBUG */
 #define SHARE(n, o) noun_share(n, machine->heap)
 #define UNSHARE(n, o) noun_unshare(n, machine->heap, true)
 #endif /* #if ARKHAM_USE_NURSERY */
@@ -385,6 +380,11 @@ namespace jit {
       virtual Value *compile(Environment *env) = 0;
 #endif
 
+      void indent_to(FILE *fp, int indent) {
+        for (int i = 0; i < indent; ++i)
+          fprintf(fp, "..");
+      }
+
       // REVISIT: source information: file, line, column
     };
 
@@ -417,7 +417,7 @@ namespace jit {
       jit_index_t current_stack_index;
       jit_index_t max_stack_index;
 
-      Environment(std::string module_name) {
+      Environment() {
         heap_t *heap = machine->heap;
 
         // Use an "impossible" value as the placeholder:
@@ -434,7 +434,9 @@ namespace jit {
     
         current_stack_index = -1;
         args_root = root_new(heap, _UNDEFINED);
+      }
 
+      Environment(std::string module_name): Environment() {
 #if ARKHAM_LLVM
         m_llvm = llvm_new(module_name.c_str());
 #endif
@@ -889,11 +891,6 @@ namespace jit {
           nit->set_value(_UNDEFINED);
         }
       }
-
-      void indent(FILE *fp, int indent) {
-        for (int i = 0; i < indent; ++i)
-          fprintf(fp, "..");
-      }
     }; // class Environment
 
 #if ARKHAM_LLVM
@@ -1073,7 +1070,7 @@ namespace jit {
             local_variable_initial_values), address * 2 + 1);
         } else {
           // Allocate a local variable slot for a declared variable:
-          env->indent(fp, indent + 1);
+          indent_to(fp, indent + 1);
           fprintf(fp, "store(@%" JIT_ADDRESS_FMT ", %" SATOM_FMT ")\n",
                   address, noun_as_satom(local_variable_initial_values));
         }
@@ -1146,12 +1143,14 @@ namespace jit {
 
       void dump(Environment *env, FILE *fp, int indent) {
         if (env->failed) return;
-        env->indent(fp, indent); 
+        indent_to(fp, indent); 
         fprintf(fp, "declare(\n"); 
+        //XXXX: only use of "env" in dump functions
         dump_impl(env, fp, indent, local_variable_initial_values->noun,
                   get_root_address(env->local_variable_index_map->noun, 1));
         inner->dump(env, fp, indent + 1);
-        env->indent(fp, indent); fprintf(fp, ")\n");
+        indent_to(fp, indent);
+        fprintf(fp, ")\n");
       }
 
       void prep(Environment *env) {
@@ -1200,8 +1199,9 @@ namespace jit {
     }; // class Declaration
 
     enum binop_type {
-      binop_eq_type,
-      binop_add_type
+      binop_add_type,
+      binop_compose_type,
+      binop_eq_type
     };
 
     class BinaryExpression : public Expression {
@@ -1224,14 +1224,17 @@ namespace jit {
       void dump(Environment *env, FILE *fp, int indent) {
         if (env->failed) return;
     
-        env->indent(fp, indent); 
+        indent_to(fp, indent); 
 
         switch (type) {
-        case binop_eq_type: 
-          fprintf(fp, "eq(");
-          break;
         case binop_add_type:
           fprintf(fp, "add(");
+          break;
+        case binop_compose_type:
+          fprintf(fp, "compose(");
+          break;
+        case binop_eq_type: 
+          fprintf(fp, "eq(");
           break;
         }
         left->dump(env, fp, -1);
@@ -1312,13 +1315,19 @@ namespace jit {
         Value *right = this->right->compile(env);
     
         switch (type) {
-        case binop_eq_type: {
-          return if_atoms(env, "eq", Type::getInt1Ty(getGlobalContext()), left,
-                          right, eq_if_atoms, eq_if_not_atoms);
-        }
         case binop_add_type: {
           return if_atoms(env, "add", llvm_noun_type(), left, right,
                           add_if_atoms, add_if_not_atoms);
+        }
+        case binop_compose_type: {
+          //XXXX
+          ASSERT0(false);
+          // return if_atoms(env, "add", llvm_noun_type(), left, right,
+          //                 add_if_atoms, add_if_not_atoms);
+        }
+        case binop_eq_type: {
+          return if_atoms(env, "eq", Type::getInt1Ty(getGlobalContext()), left,
+                          right, eq_if_atoms, eq_if_not_atoms);
         }
         }
     
@@ -1337,12 +1346,18 @@ namespace jit {
     
         if (!env->failed) {
           switch (type) {
-          case binop_eq_type:
-            env->set_stack(stack_index, atom_equals(n1, n2));
-            env->set_stack(stack_index + 1, _UNDEFINED);
-            break;
           case binop_add_type:
             env->set_stack(stack_index, atom_add(n1, n2));
+            env->set_stack(stack_index + 1, _UNDEFINED);
+            break;
+          case binop_compose_type:
+            //XXXX
+            ASSERT0(false);
+            // env->set_stack(stack_index, atom_add(n1, n2));
+            // env->set_stack(stack_index + 1, _UNDEFINED);
+            break;
+          case binop_eq_type:
+            env->set_stack(stack_index, atom_equals(n1, n2));
             env->set_stack(stack_index + 1, _UNDEFINED);
             break;
           }
@@ -1386,7 +1401,8 @@ namespace jit {
       void dump(Environment *env, FILE *fp, int indent) {
         if (env->failed) return;
 
-        env->indent(fp, indent); fprintf(fp, "inc(");
+        indent_to(fp, indent);
+        fprintf(fp, "inc(");
         subexpr->dump(env, fp, -1);
         fprintf(fp, ")");
       }
@@ -1441,8 +1457,8 @@ namespace jit {
       void dump(Environment *env, FILE *fp, int indent) {
         if (env->failed) return;
     
-        env->indent(fp, indent); fprintf(fp, "load(@%" JIT_ADDRESS_FMT ")",
-          address);
+        indent_to(fp, indent);
+        fprintf(fp, "load(@%" JIT_ADDRESS_FMT ")", address);
       }
 
       void prep(Environment *env) {
@@ -1488,7 +1504,7 @@ namespace jit {
       void dump(Environment *env, FILE *fp, int indent) {
         if (env->failed) return;
     
-        env->indent(fp, indent); fprintf(fp, "store(");
+        indent_to(fp, indent); fprintf(fp, "store(");
         subexpr->dump(env, fp, -1);
         fprintf(fp, ", @%" JIT_ADDRESS_FMT ")", address);
       }
@@ -1620,21 +1636,34 @@ namespace jit {
       void dump(Environment *env, FILE *fp, int indent) {
         if (env->failed) return;
 
-        env->indent(fp, indent); fprintf(fp, "loop(\n");
-        env->indent(fp, indent + 1); fprintf(fp, "while(\n");
-        env->indent(fp, indent + 2); test->dump(env, fp, -1);
-        fprintf(fp, "\n"); env->indent(fp, indent + 1); fprintf(fp, ")\n");
-        env->indent(fp, indent + 1); fprintf(fp, "do(\n");
-        env->indent(fp, indent + 2); 
+        indent_to(fp, indent);
+        fprintf(fp, "loop(\n");
+        indent_to(fp, indent + 1);
+        fprintf(fp, "while(\n");
+        indent_to(fp, indent + 2);
+        test->dump(env, fp, -1);
+        fprintf(fp, "\n");
+        indent_to(fp, indent + 1);
+        fprintf(fp, ")\n");
+        indent_to(fp, indent + 1);
+        fprintf(fp, "do(\n");
+        indent_to(fp, indent + 2);
 
         iteration->dump(env, fp, indent);
 
-        fprintf(fp, "\n"); env->indent(fp, indent + 1); fprintf(fp, ")\n");
-        env->indent(fp, indent + 1); fprintf(fp, "done(\n");
-        env->indent(fp, indent + 2); result->dump(env, fp, -1); 
         fprintf(fp, "\n");
-        env->indent(fp, indent + 1); fprintf(fp, ")\n");
-        env->indent(fp, indent); fprintf(fp, ")\n");
+        indent_to(fp, indent + 1);
+        fprintf(fp, ")\n");
+        indent_to(fp, indent + 1);
+        fprintf(fp, "done(\n");
+        indent_to(fp, indent + 2);
+        result->dump(env, fp, -1);
+
+        fprintf(fp, "\n");
+        indent_to(fp, indent + 1);
+        fprintf(fp, ")\n");
+        indent_to(fp, indent);
+        fprintf(fp, ")\n");
       }
 
       void prep(Environment *env) {
@@ -1749,32 +1778,38 @@ using namespace jit::rlyeh;
 
 Node *rlyeh(noun_t rt);
 
-#define T_ENTER(n) if (ARKHAM_TRACE_TRANSFORM) do { \
+static void
+rlyeh_failed() {
+}
+
+#define RLYEH_ENTER(n) if (ARKHAM_TRACE_RLYEH) do { \
   fprintf(machine->trace_file, "enter %s: ", __FUNCTION__); \
-  noun_print(machine->trace_file, rt, true, false); \
+  noun_print(machine->trace_file, n, true, false); \
   fprintf(machine->trace_file, "\n"); \
 } while (false)
 
-#define T_LEAVE(n) if (ARKHAM_TRACE_TRANSFORM) do { \
+#define RLYEH_LEAVE(n, nd) if (ARKHAM_TRACE_RLYEH) do {     \
   fprintf(machine->trace_file, "leave %s: ", __FUNCTION__); \
-  noun_print(machine->trace_file, rt, true, false); \
+  noun_print(machine->trace_file, n, true, false); \
   fprintf(machine->trace_file, "\n"); \
 } while (false)
 
-#define RLYEH_FAIL() do { \
-  printf("Rlyeh failed: file %s function %s line %d\n", __FILE__, __FUNCTION__, __LINE__); \
+#define RLYEH_FAIL() if (ARKHAM_TRACE_RLYEH) do { \
+  fprintf(machine->trace_file, "rlyeh failed: file %s function %s line %d\n", __FILE__, __FUNCTION__, __LINE__); \
+  rlyeh_failed(); \
+  RLYEH_LEAVE(rt, NULL); \
   return NULL; \
 } while(false)
 
 Declaration *rlyeh_decl(noun_t rt) {
-  T_ENTER(rt);
+  RLYEH_ENTER(rt);
 
   Node *inner = rlyeh(R(rt));
 
   if (inner != NULL) {
     Declaration *decl = new Declaration(R(L(rt)));
     decl->set_inner(inner);
-    T_LEAVE(rt);
+    RLYEH_LEAVE(rt, decl);
     return decl;
   }
 
@@ -1782,7 +1817,7 @@ Declaration *rlyeh_decl(noun_t rt) {
 }
 
 Loop *rlyeh_simple_loop(noun_t rt) {
-  T_ENTER(rt);
+  RLYEH_ENTER(rt);
 
   if (!NOUN_IS_CELL(rt))
     RLYEH_FAIL();
@@ -1821,8 +1856,7 @@ Loop *rlyeh_simple_loop(noun_t rt) {
           loop->set_result(yes_expr);
           loop->set_iteration(no_iter);
 
-          T_LEAVE(rt);
-
+          RLYEH_LEAVE(rt, loop);
           return loop;
         }
       }
@@ -1838,18 +1872,19 @@ Loop *rlyeh_simple_loop(noun_t rt) {
 }
 
 Load *rlyeh_load(noun_t rt) {
-  T_ENTER(rt);
+  RLYEH_ENTER(rt);
 
   if (NOUN_IS_SATOM(rt)) {
-    T_LEAVE(rt);
-    return new Load(NOUN_AS_SATOM(rt));
+    Load *load = new Load(NOUN_AS_SATOM(rt));
+    RLYEH_LEAVE(rt, load);
+    return load;
   }
-  else
-    RLYEH_FAIL();
+
+  RLYEH_FAIL();
 }
 
 IncrementExpression *rlyeh_inc(noun_t rt) {
-  T_ENTER(rt);
+  RLYEH_ENTER(rt);
 
   Node *sub = rlyeh(rt);
 
@@ -1857,7 +1892,8 @@ IncrementExpression *rlyeh_inc(noun_t rt) {
   if (sub_expr != NULL) {
     IncrementExpression *inc = new IncrementExpression();
     inc->set_subexpr(sub_expr);
-    T_LEAVE(rt);
+
+    RLYEH_LEAVE(rt, inc);
     return inc;
   }
 
@@ -1865,7 +1901,7 @@ IncrementExpression *rlyeh_inc(noun_t rt) {
 }
 
 BinaryExpression *rlyeh_binop(noun_t rt, enum binop_type type) {
-  T_ENTER(rt);
+  RLYEH_ENTER(rt);
 
   Node *left = rlyeh(L(rt));
   Node *right = NULL;
@@ -1874,15 +1910,15 @@ BinaryExpression *rlyeh_binop(noun_t rt, enum binop_type type) {
   if (left != NULL) {
     Node *right = rlyeh(R(rt));
 
+    ///XXXX: loops can be an expression!
     Expression *right_expr = dynamic_cast<Expression *>(right);
-    if (right != NULL) {
+    if (right_expr != NULL) {
       BinaryExpression *binop = new BinaryExpression(type);
 
       binop->set_left(left_expr);
       binop->set_right(right_expr);
 
-      T_LEAVE(rt);
-
+      RLYEH_LEAVE(rt, binop);
       return binop;
     }
   }
@@ -1896,7 +1932,7 @@ BinaryExpression *rlyeh_binop(noun_t rt, enum binop_type type) {
 }
 
 Store *rlyeh_store(noun_t rt, jit_address_t address) {
-  T_ENTER(rt);
+  RLYEH_ENTER(rt);
 
   Node *sub = rlyeh(rt);
 
@@ -1904,7 +1940,8 @@ Store *rlyeh_store(noun_t rt, jit_address_t address) {
   if (sub_expr != NULL) {
     Store *store = new Store(address);
     store->set_subexpr(sub_expr);
-    T_LEAVE(rt);
+
+    RLYEH_LEAVE(rt, store);
     return store;
   }
 
@@ -1913,12 +1950,12 @@ Store *rlyeh_store(noun_t rt, jit_address_t address) {
 
 bool rlyeh_iter_impl(noun_t rt, jit_address_t address,
                          Iteration *iteration) {
-  T_ENTER(rt);
+  RLYEH_ENTER(rt);
 
   if (address > JIT_ADDRESS_MAX)
-    return false;
+    return false; //XXXX: call RLYEH_FAIL
   else if (!NOUN_IS_CELL(rt))
-    return false;
+    return false; //XXXX: call RLYEH_FAIL
 
   noun_t l = L(rt);
   bool result;
@@ -1935,13 +1972,12 @@ bool rlyeh_iter_impl(noun_t rt, jit_address_t address,
     result = (store != NULL);
   }    
 
-  T_LEAVE(rt);
-
+  RLYEH_LEAVE(rt, result);
   return result;
 }
 
 Iteration *rlyeh_iter(noun_t rt) {
-  T_ENTER(rt);
+  RLYEH_ENTER(rt);
 
   if (NOUN_EQUALS(L(rt), _2)) {
     noun_t r = R(rt);
@@ -1954,7 +1990,7 @@ Iteration *rlyeh_iter(noun_t rt) {
         delete iteration;
         RLYEH_FAIL();
       } else {
-        T_LEAVE(rt);
+        RLYEH_LEAVE(rt, iteration);
         return iteration;
       }
     }
@@ -1964,7 +2000,7 @@ Iteration *rlyeh_iter(noun_t rt) {
 }
 
 Node *rlyeh(noun_t rt) {
-  T_ENTER(rt);
+  RLYEH_ENTER(rt);
 
   heap_t *heap = machine->heap;
   
@@ -1973,12 +2009,26 @@ Node *rlyeh(noun_t rt) {
     if (NOUN_IS_SATOM(l)) {
       noun_t r = R(rt);
       switch (NOUN_AS_SATOM(l)) {
-      case 0:
-        return rlyeh_load(r);
-      case 4:
-        return rlyeh_inc(r);
-      case 5:
-        return rlyeh_binop(r, binop_eq_type);
+      case 0: {
+        Load *load = rlyeh_load(r);
+        RLYEH_LEAVE(rt, load);
+        return load;
+      }
+      case 4: {
+        IncrementExpression *inc = rlyeh_inc(r);
+        RLYEH_LEAVE(rt, inc);
+        return inc;
+      }
+      case 5:{
+        BinaryExpression *binop = rlyeh_binop(r, binop_eq_type);
+        RLYEH_LEAVE(rt, binop);
+        return binop;
+      }
+      case 7:{
+        BinaryExpression *binop = rlyeh_binop(r, binop_compose_type);
+        RLYEH_LEAVE(rt, binop);
+        return binop;
+      }
       case 8:
         if (NOUN_IS_CELL(r)) {
           noun_t rl = L(r);
@@ -1986,6 +2036,8 @@ Node *rlyeh(noun_t rt) {
           if (NOUN_IS_CELL(rl)) {
             if (NOUN_EQUALS(L(rl), _1)) {
               noun_t rr = R(r), rrr, rrrr;
+              Loop *loop;
+              Declaration *decl;
 
               if (!NOUN_IS_CELL(rr) || !NOUN_EQUALS(L(rr), _9))
                 goto is_decl;
@@ -1997,15 +2049,22 @@ Node *rlyeh(noun_t rt) {
                   || !NOUN_EQUALS(R(rrrr), _1))
                 goto is_decl;
 
-              return rlyeh_simple_loop(R(rl));
+              loop = rlyeh_simple_loop(R(rl));
+              RLYEH_LEAVE(rt, loop);
+              return loop;
 
             is_decl:
-              return rlyeh_decl(r);
+              decl = rlyeh_decl(r);
+              RLYEH_LEAVE(rt, decl);
+              return decl;
             }
           }
         }
-      case 9:
-        return rlyeh_iter(r);
+      case 9: {
+        Iteration *iter = rlyeh_iter(r);
+        RLYEH_LEAVE(rt, iter);
+        return iter;
+      }
       }
     }
   }
@@ -2013,123 +2072,193 @@ Node *rlyeh(noun_t rt) {
   RLYEH_FAIL();
 }
 
+typedef struct compiled_formula {
 #if ARKHAM_LLVM
-// TODO: More jet slots
-static llvm_t *compiled_formulas[16];
-static llvm_t undefined_compiled_formula;
+  llvm_t *llvm;
 #endif
-
-noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
-  satom_t index;
-
-  if (!NOUN_IS_SATOM(hint))
-    return _UNDEFINED;
-
-  index = NOUN_AS_SATOM(hint);
-  
-#if ARKHAM_LLVM
-  if (index > (sizeof(compiled_formulas) / sizeof(compiled_formulas[0])))
-    return _UNDEFINED; //XXX: log
+#if ARKHAM_EVAL_RLYEH
+  Node *rlyeh;
 #endif
+  noun_t hint;
+  bool attempted;
+  bool defined;
+} compiled_formula_t;
 
-  Node *rlyeh_formula = NULL;
-  noun_t result = _UNDEFINED;
-  Environment *env = NULL;
-
+void compiled_formula_init(compiled_formula_t *cf,
+                           noun_t hint,
 #if ARKHAM_LLVM
-  llvm_t *compiled_formula = compiled_formulas[index];
+                           llvm_t *llvm,
+#endif
+#if ARKHAM_EVAL_RLYEH
+                           Node *rlyeh
+#endif
+                           ) {
+#if ARKHAM_LLVM
+  cf->llvm = llvm;
+#endif
+#if ARKHAM_EVAL_RLYEH
+  cf->rlyeh = rlyeh;
+#endif
+  cf->hint = hint;
+  cf->attempted = true;
+  cf->defined = true;
+}
 
-  if (compiled_formula != NULL) {
-    if (compiled_formula != &undefined_compiled_formula)
-      return (compiled_formula->fn)(subject);
-    else
-      return _UNDEFINED;
-  }
+noun_t compiled_formula_exec(compiled_formula_t *cf, noun_t subject) {
+  if (cf->defined) {
+#if ARKHAM_LLVM
+    noun_t compiled_result = (cf->llvm->fn)(subject);
+#endif /* ARKHAM_LLVM */
 
-  {
-    std::string filename = machine_jet_path(machine, index);
-    OwningPtr<MemoryBuffer> file;
-    error_code read_error = MemoryBuffer::getFile(filename.c_str(), file);
+#if ARKHAM_EVAL_RLYEH
+    Environment *env = new Environment();
+    noun_t eval_result;
 
-    if (read_error) {
-      ERROR("Could not open bitcode file for reading '%s': '%s'\n",
-            filename.c_str(), read_error.message().c_str());
+    //XXXX: prep for eval only
+    env->prep(cf->rlyeh);
+
+    if (env->failed) {
+      INFO("Preparation failed: %" SATOM_FMT "\n", NOUN_AS_SATOM(cf->hint));
+      eval_result = _UNDEFINED;
     } else {
-      INFO("Read bitcode from file '%s'\n", filename.c_str());
+      eval_result = env->eval_rlyeh(cf->rlyeh, subject);
 
-      std::string parse_error;
-      Module *module = ParseBitcodeFile(file.take(), getGlobalContext(),
-                                        &parse_error);
-
-      if (module != NULL) {
-        compiled_formula = llvm_new_module(module);
-        llvm_lookup_and_store_function(compiled_formula);
-
-        goto compiled;
-      } else {
-        ERROR("Could not read bitcode file '%s': '%s'\n",
-              filename.c_str(), parse_error.c_str());
+      if (env->failed) {
+        INFO("Evaluation failed: %" SATOM_FMT "\n", NOUN_AS_SATOM(cf->hint));
+        eval_result = _UNDEFINED;
       }
     }
-  }
+
+    delete env;
+#endif /* ARKHAM_EVAL_RLYEH */
+
+#if ARKHAM_LLVM && ARKHAM_EVAL_RLYEH
+    ASSERT0(NOUN_EQUALS(compiled_result, eval_result));
+    return compiled_result;
+#elif ARKHAM_LLVM
+    return compiled_result;
+#elif ARKHAM_EVAL_RLYEH
+    return eval_result;
+#else
+#error error
 #endif
-
-  rlyeh_formula = rlyeh(formula);
-
-  printf("rlyeh=%p\n", rlyeh_formula);//QQQ
-
-  if (rlyeh_formula == NULL) {
-#if ARKHAM_LLVM
-    compiled_formulas[index] = &undefined_compiled_formula;
-#endif
-    goto done;
+  } else {
+    return _UNDEFINED;
   }
-  
-  env = new Environment(machine_jet_file(machine, index));
+}
 
-  env->prep(rlyeh_formula);
+// TODO: More jet slots
+static compiled_formula_t compiled_formulas[16];
 
+static llvm_t *load(Node *rlyeh, satom_t index) {
+  std::string filename = machine_jet_path(machine, index);
+  OwningPtr<MemoryBuffer> file;
+  error_code read_error = MemoryBuffer::getFile(filename.c_str(), file);
+
+  if (read_error) {
+    INFO("Could not open bitcode file for reading '%s': '%s'\n",
+         filename.c_str(), read_error.message().c_str());
+  } else {
+    INFO("Read bitcode from file '%s'\n", filename.c_str());
+
+    std::string parse_error;
+    Module *module = ParseBitcodeFile(file.take(), getGlobalContext(),
+                                      &parse_error);
+
+    if (module != NULL) {
+      llvm_t *llvm = llvm_new_module(module);
+      llvm_lookup_and_store_function(llvm);
+      return llvm;
+    } else {
+      ERROR("Could not read bitcode file '%s': '%s'\n",
+            filename.c_str(), parse_error.c_str());
+    }
+  }
+
+  return NULL;
+}
+
+static llvm_t *load_or_compile(Node *rlyeh, satom_t index, noun_t hint) {
+  llvm_t *llvm = load(rlyeh, index);
+
+  if (llvm != NULL)
+    return llvm;
+
+  Environment *env = new Environment(machine_jet_file(machine, index));
+
+  //XXXX: prep for compile only
+  env->prep(rlyeh);
+      
   if (env->failed) {
     INFO("Preparation failed: %" SATOM_FMT "\n", NOUN_AS_SATOM(hint));
     goto done;
   }
 
-  if (ARKHAM_TRACE_RLYEH)
-    rlyeh_formula->dump(env, machine->trace_file, 0);
-
-#if ARKHAM_LLVM
-  compiled_formula = env->compile(rlyeh_formula, index);
-
+  llvm = env->compile(rlyeh, index);
+    
   if (env->failed) {
     INFO("Compilation failed: %" SATOM_FMT "\n", NOUN_AS_SATOM(hint));
     goto done;
   }
 
- compiled:
-
-  compiled_formulas[index] = compiled_formula;
-
-  result = (compiled_formula->fn)(subject); // XXX: unshare?
-#else
-  result = env->eval_rlyeh(rlyeh_formula, subject);
-
-  if (env->failed)
-    INFO("Evaluation failed: %" SATOM_FMT "\n", NOUN_AS_SATOM(hint));
-#endif
-
  done:
 
-#if ARKHAM_LLVM
-  if (NOUN_IS_UNDEFINED(result))
-    compiled_formulas[index] = &undefined_compiled_formula;
+  delete env;
+
+  return llvm;
+}
+
+noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
+#if !ARKHAM_LLVM && !ARKHAM_EVAL_RLYEH
+  return _UNDEFINED;
 #endif
 
-  if (rlyeh_formula != NULL)
-    delete rlyeh_formula;
-  if (env != NULL)
-    delete env;
+  if (!NOUN_IS_SATOM(hint))
+    return _UNDEFINED;
 
-  return result;
+  satom_t index = NOUN_AS_SATOM(hint);
+  
+  if (index > (sizeof(compiled_formulas) / sizeof(compiled_formulas[0])))
+    return _UNDEFINED; //XXX: log
+
+  compiled_formula_t *compiled_formula = &compiled_formulas[index];
+
+  if (!compiled_formula->attempted) {
+    compiled_formula->attempted = true;
+
+    Node *rlyeh_formula = rlyeh(formula);
+
+    if (rlyeh_formula == NULL)
+      return _UNDEFINED;
+
+    //XXXX: env to dump
+    if (ARKHAM_TRACE_RLYEH)
+      rlyeh_formula->dump(env, machine->trace_file, 0);
+
+#if ARKHAM_LLVM
+    llvm_t *llvm = load_or_compile(rlyeh_formula, index, hint);
+
+    if (llvm == NULL) {
+      delete rlyeh_formula;
+      return _UNDEFINED;
+    }
+
+#if !ARKHAM_EVAL_RLYEH
+    delete rlyeh_formula;
+#endif
+#endif
+
+    compiled_formula_init(compiled_formula, hint,
+#if ARKHAM_LLVM
+                          llvm,
+#endif
+#if ARKHAM_EVAL_RLYEH
+                          rlyeh_formula
+#endif
+                          );
+  }
+
+  return compiled_formula_exec(compiled_formula, subject);
 }
 
 // QQQ: remove

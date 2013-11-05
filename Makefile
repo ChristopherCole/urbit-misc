@@ -27,7 +27,7 @@ endif
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
   CC_FLAGS = -std=c99
-  CXX_FLAGS =
+  CXX_FLAGS = -std=c++11
   CXX_LINK_FLAGS = -lstdc++
 endif
 ifeq ($(UNAME_S),Darwin)
@@ -35,7 +35,7 @@ ifeq ($(UNAME_S),Darwin)
   LLVM_ROOT= /Users/Dad/Packages/llvm/install
 #  LLVM_ROOT= ${PACKAGE_ROOT}
   CC_FLAGS = -I${LLVM_ROOT}/include -I${PACKAGE_ROOT}/include -I/usr/local/include
-  CXX_FLAGS = -I${LLVM_ROOT}/include -I${PACKAGE_ROOT}/include -I/usr/local/include
+  CXX_FLAGS = -std=c++11 -I${LLVM_ROOT}/include -I${PACKAGE_ROOT}/include -I/usr/local/include
   CXX_LINK_FLAGS = -L${LLVM_ROOT}/lib -L${PACKAGE_ROOT}/lib -L/usr/local/lib -lc++
 endif
 

@@ -28,18 +28,18 @@ noun_nop(noun_t noun) {
   return noun;
 }
 
-#if ALLOC_DEBUG
+#if ARKHAM_ALLOC_DEBUG
 /* When doing allocation debugging we need ownership information: */
 #define SHARE_RC_SPACE(noun, o) noun_share(noun, heap, o)
 #define SHARE_CHILD_RC_SPACE(noun, o) noun_share(noun, heap, o)
 #define UNSHARE_RC_SPACE(noun, o) noun_unshare(noun, heap, true, o)
 #define UNSHARE_CHILD_RC_SPACE(noun, o) noun_unshare(noun, heap, false, o)
-#else /* #if !ALLOC_DEBUG */
+#else /* #if !ARKHAM_ALLOC_DEBUG */
 #define SHARE_RC_SPACE(noun, o) noun_share(noun, heap)
 #define SHARE_CHILD_RC_SPACE(noun, o) noun_share(noun, heap)
 #define UNSHARE_RC_SPACE(noun, o) noun_unshare(noun, heap, true)
 #define UNSHARE_CHILD_RC_SPACE(noun, o) noun_unshare(noun, heap, false)
-#endif /* #if ALLOC_DEBUG */
+#endif /* #if ARKHAM_ALLOC_DEBUG */
 
 #if ARKHAM_USE_NURSERY
 #define SHARE(noun, o) noun_nop(noun)
@@ -182,26 +182,26 @@ static void noun_print_decl(FILE *file, noun_t noun);
 
 static inline satom_t
 noun_metainfo_get_refs(noun_metainfo_t *noun_metainfo) {
-#if INLINE_REFS
+#if ARKHAM_INLINE_REFS
   return noun_metainfo->refs;
 #endif
 }
 
 static inline void
 noun_metainfo_inc_refs(noun_metainfo_t *noun_metainfo) {
-#if INLINE_REFS
+#if ARKHAM_INLINE_REFS
   noun_metainfo->refs += 1;
 #endif
 }
 
 static inline void
 noun_metainfo_dec_refs(noun_metainfo_t *noun_metainfo) {
-#if INLINE_REFS
+#if ARKHAM_INLINE_REFS
   noun_metainfo->refs -= 1;
 #endif
 }
 
-#if ALLOC_DEBUG
+#if ARKHAM_ALLOC_DEBUG
 
 // TODO: Adjustable owners array size
 #define OWNERS_SIZE 32
@@ -308,7 +308,7 @@ noun_metainfo_remove_owner(noun_metainfo_t *noun_metainfo,
 
   ASSERT(false, "Couldn't remove owner\n");
 }
-#endif /* #if ALLOC_DEBUG */
+#endif /* #if ARKHAM_ALLOC_DEBUG */
 
 const char *
 noun_type_to_string(enum noun_type noun_type)
@@ -363,7 +363,7 @@ heap_print_stats(heap_t *heap, FILE *file) {
 
 static void
 heap_print(heap_t *heap, FILE *file) {
-#if ALLOC_DEBUG
+#if ARKHAM_ALLOC_DEBUG
   for (noun_metainfo_t *noun_metainfo = heap->first; noun_metainfo != NULL; 
        noun_metainfo = noun_metainfo->next) {
     if (noun_metainfo_get_refs(noun_metainfo) != ALLOC_FREE_MARKER) {
@@ -387,7 +387,7 @@ heap_print(heap_t *heap, FILE *file) {
     }
   }
   fprintf(file, "}\n");
-#endif /* #if ALLOC_DEBUG */
+#endif /* #if ARKHAM_ALLOC_DEBUG */
 }
 
 #if ARKHAM_USE_NURSERY
@@ -434,7 +434,7 @@ static void
 heap_free_free_list(heap_t *heap) {
 #if CELL_FREE_LIST
   for (int i = 0; i < heap->cell_free_list_size; ++i) {
-#if !ALLOC_DEBUG
+#if !ARKHAM_ALLOC_DEBUG
     free(heap->cell_free_list[(heap->cell_free_list_start + i) %
       CELL_FREE_LIST_SIZE]);
 #endif
@@ -454,7 +454,7 @@ heap_free(heap_t *heap) {
 #endif
 }
 
-#if ALLOC_DEBUG
+#if ARKHAM_ALLOC_DEBUG
 static void
 heap_register_debug(heap_t *heap, noun_metainfo_t *noun_metainfo,
                     enum noun_type type) {
@@ -468,7 +468,7 @@ heap_register_debug(heap_t *heap, noun_metainfo_t *noun_metainfo,
     heap->first = noun_metainfo;
   heap->last = noun_metainfo;
 }
-#endif /* #if ALLOC_DEBUG */
+#endif /* #if ARKHAM_ALLOC_DEBUG */
 
 #if ARKHAM_USE_NURSERY
 void
@@ -491,6 +491,11 @@ heap_trace_nursery(noun_t *address, noun_metainfo_t *owner, heap_t *heap) {
 
         cell_t *rc_space_cell = cell_new_old_space(heap, cell->left,
           cell->right);
+
+#if ARKHAM_TRACK_ORIGIN
+        cell_copy_origin(rc_space_cell, cell);
+#endif
+
         rc_space_noun = CELL_AS_NOUN(rc_space_cell);
 
         // Mark the cell as forwarded:
@@ -580,7 +585,7 @@ static void roots_hash(machine_t *machine, noun_t *address,
 
 static void roots_sanity(machine_t *machine, noun_t *address, 
                          noun_metainfo_t *owner, void *data) {
-#if INLINE_REFS
+#if ARKHAM_INLINE_REFS
   noun_t noun = *address;
   if (NOUN_IS_CELL(noun) && NOUN_IS_DEFINED(noun) &&
       !heap_is_nursery(machine->heap, NOUN_AS_CELL(noun)))
@@ -591,7 +596,7 @@ static void roots_sanity(machine_t *machine, noun_t *address,
 static void roots_print(machine_t *machine, noun_t *address, 
                        noun_metainfo_t *owner, void *data) {
   FILE *file = (FILE *)data;
-#if ALLOC_DEBUG
+#if ARKHAM_ALLOC_DEBUG
   noun_metainfo_print_metainfo(file, "owner: ", owner, ", noun: ");
 #else
   fprintf(file, "noun: ");
@@ -618,7 +623,7 @@ static void roots_build_write_log(machine_t *machine, noun_t *address,
       (write_log_t){ 
       .address = address,
       .noun = *address
-#if ALLOC_DEBUG
+#if ARKHAM_ALLOC_DEBUG
       , .owner = owner
 #endif
     };
@@ -645,7 +650,7 @@ collect_garbage(size_t size) {
   for (write_log_t *w = heap->write_log_start; w < heap->write_log_current; 
        ++w) {
     noun_metainfo_t *owner;
-#if ALLOC_DEBUG
+#if ARKHAM_ALLOC_DEBUG
     owner = w->owner;
 #else
     owner = ROOT_OWNER;
@@ -783,15 +788,15 @@ batom_copy_nursery(batom_t **batomp, batom_t *batom) {
 static inline void
 noun_metainfo_init(noun_metainfo_t *metainfo, heap_t *heap,
                    enum noun_type type) {
-#if INLINE_REFS
+#if ARKHAM_INLINE_REFS
   metainfo->refs = 0;
 #endif
 
-#if INLINE_REFS && ARKHAM_PADDING && ARKHAM_ASSERT
+#if ARKHAM_INLINE_REFS && ARKHAM_PADDING && ARKHAM_ASSERT
   metainfo->_padding = 0;
 #endif
 
-#if ALLOC_DEBUG
+#if ARKHAM_ALLOC_DEBUG
   heap_register_debug(heap, metainfo, type);
 #endif
 }
@@ -866,9 +871,9 @@ heap_free_cell(heap_t *heap, cell_t *cell) {
 #endif
   } else {
 #endif
-#if !ARKHAM_USE_NURSERY && !ALLOC_DEBUG
+#if !ARKHAM_USE_NURSERY && !ARKHAM_ALLOC_DEBUG
     free(old_space_cell);
-#endif /* #if !ARKHAM_USE_NURSERY && !ALLOC_DEBUG */
+#endif /* #if !ARKHAM_USE_NURSERY && !ARKHAM_ALLOC_DEBUG */
 #if ARKHAM_STATS
     ASSERT0(heap->cell_free < heap->cell_alloc);
     ++heap->cell_free;
@@ -889,9 +894,9 @@ heap_free_batom(heap_t *heap, batom_t *batom) {
 
   noun_metainfo_free(&(old_space_batom->metainfo));
 
-#if !ARKHAM_USE_NURSERY && !ALLOC_DEBUG
+#if !ARKHAM_USE_NURSERY && !ARKHAM_ALLOC_DEBUG
   free(old_space_batom);
-#endif /* #if !ARKHAM_USE_NURSERY && !ALLOC_DEBUG */
+#endif /* #if !ARKHAM_USE_NURSERY && !ARKHAM_ALLOC_DEBUG */
 #if ARKHAM_STATS
   ASSERT0(heap->batom_free < heap->batom_alloc);
   ++heap->batom_free;
@@ -928,7 +933,7 @@ noun_is_shared(noun_t noun, heap_t *heap) {
   }
 }
 
-#if ALLOC_DEBUG
+#if ARKHAM_ALLOC_DEBUG
 static unsigned long
 noun_get_id(noun_t noun) {
   switch (noun_get_type(noun)) {
@@ -942,7 +947,7 @@ noun_get_id(noun_t noun) {
 }
 #endif
 
-#if ALLOC_DEBUG
+#if ARKHAM_ALLOC_DEBUG
 noun_t
 noun_share(noun_t noun, heap_t *heap, noun_metainfo_t *owner) {
 #else
@@ -956,7 +961,7 @@ noun_share(noun_t noun, heap_t *heap) {
   case batom_type:
   case cell_type: {
     noun_metainfo_t *noun_metainfo = NOUN_GET_METAINFO(noun);
-#if ALLOC_DEBUG
+#if ARKHAM_ALLOC_DEBUG
     noun_metainfo_add_owner(noun_metainfo, owner);
 #endif
     satom_t refs = noun_metainfo_get_refs(noun_metainfo);
@@ -1006,7 +1011,7 @@ noun_share(noun_t noun, heap_t *heap) {
   }
 }
 
-#if ALLOC_DEBUG
+#if ARKHAM_ALLOC_DEBUG
 void
 noun_unshare(noun_t noun, heap_t *heap, bool toplevel, noun_metainfo_t *owner) {
 #else
@@ -1020,7 +1025,7 @@ noun_unshare(noun_t noun, heap_t *heap, bool toplevel) {
   case batom_type:
   case cell_type: {
     noun_metainfo_t *noun_metainfo = NOUN_GET_METAINFO(noun);
-#if ALLOC_DEBUG
+#if ARKHAM_ALLOC_DEBUG
     noun_metainfo_remove_owner(noun_metainfo, owner);
 #endif
     satom_t refs = noun_metainfo_get_refs(noun_metainfo);
@@ -1110,6 +1115,19 @@ cell_new_old_space(heap_t *heap, noun_t left, noun_t right) {
   SHARE(right, metainfo);
   return cell;
 }
+
+#if ARKHAM_TRACK_ORIGIN
+void
+cell_set_origin(cell_t *cell, int row, int column) {
+  cell->row = row;
+  cell->column = column;
+}
+
+void
+cell_copy_origin(cell_t *cell, cell_t *from) {
+  cell_set_origin(cell, from->row, from->column);
+}
+#endif
 
 ARKHAM_USE_NURSERY_INLINE batom_t *
 batom_new_old_space(heap_t *heap, mpz_t val, bool clear) {
@@ -1346,7 +1364,7 @@ static void
 cell_print(FILE *file, noun_t cell, bool brackets, bool metainfo) {
   ASSERT0(noun_get_type(cell) == cell_type);
   if (brackets) fprintf(file, "[");
-#if ALLOC_DEBUG_PRINT
+#if ARKHAM_ALLOC_DEBUG_PRINT
   if (metainfo) {
     noun_metainfo_print_metainfo(file, "", NOUN_GET_METAINFO(cell), "");
     fprintf(file, " ");
@@ -1354,7 +1372,7 @@ cell_print(FILE *file, noun_t cell, bool brackets, bool metainfo) {
 #endif
   noun_print(file, noun_get_left(cell), true, metainfo);
   fprintf(file, " ");
-  noun_print(file, noun_get_right(cell), ALLOC_DEBUG_PRINT && metainfo ? 
+  noun_print(file, noun_get_right(cell), ARKHAM_ALLOC_DEBUG_PRINT && metainfo ? 
              true : false, metainfo);
   if (brackets) fprintf(file, "]");
 }
@@ -1369,7 +1387,7 @@ noun_print(FILE *file, noun_t noun, bool brackets, bool metainfo) {
     }
   case batom_type:
     {
-#if ALLOC_DEBUG_PRINT
+#if ARKHAM_ALLOC_DEBUG_PRINT
       noun_metainfo_print_metainfo(file, "", NOUN_GET_METAINFO(noun), "");
 #endif
       batom_print(file, noun_as_batom(noun));
@@ -1607,6 +1625,11 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
           noun_t left = *(noun_t *)vec_pop(&stack);
           noun_t cell = CELL(left, right);
           END_CELLS();
+
+#if ARKHAM_TRACK_ORIGIN
+          cell_set_origin(NOUN_AS_CELL(cell), row, column);
+#endif
+
           vec_push(&stack, &cell);
         }
         vec_pop(&count);
@@ -1934,7 +1957,7 @@ static inline void inc_ops(machine_t *machine) {
           machine->ops, hash);
 #endif
 
-#if ALLOC_DEBUG
+#if ARKHAM_ALLOC_DEBUG
   do_roots(machine, roots_sanity, NULL);
 #endif
 

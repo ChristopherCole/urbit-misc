@@ -422,18 +422,17 @@ namespace jit {
 
         // Use an "impossible" value as the placeholder:
         BATOMS(2);
-        args_placeholder = root_new(heap, 
-                                    BATOM_ULONG(JIT_INDEX_MAX + 1UL));
-        SHARE(args_placeholder->noun, ENV_OWNER);
-        loop_body_placeholder = root_new(heap,
-                                         BATOM_ULONG(JIT_INDEX_MAX + 2UL));
+        args_placeholder =
+          root_new(heap, BATOM_ULONG(JIT_INDEX_MAX + 1UL), ENV_OWNER);
+        loop_body_placeholder = 
+          root_new(heap, BATOM_ULONG(JIT_INDEX_MAX + 2UL), ENV_OWNER);
         END_BATOMS();
-        SHARE(loop_body_placeholder->noun, ENV_OWNER);
-        local_variable_index_map = root_new(heap, args_placeholder->noun);
-        SHARE(local_variable_index_map->noun, ENV_OWNER);
+        local_variable_index_map =
+          root_new(heap, args_placeholder->noun, ENV_OWNER);
     
         current_stack_index = -1;
-        args_root = root_new(heap, _UNDEFINED);
+        args_root = root_new(heap, _UNDEFINED, ENV_OWNER);
+        m_llvm = NULL;
       }
 
       Environment(std::string module_name): Environment() {
@@ -445,15 +444,10 @@ namespace jit {
       ~Environment() {
         heap_t *heap = machine->heap;
 
-        UNSHARE(args_placeholder->noun, ENV_OWNER);
-        root_delete(heap, args_placeholder);
-        UNSHARE(loop_body_placeholder->noun, ENV_OWNER);
-        root_delete(heap, loop_body_placeholder);
-        UNSHARE(local_variable_index_map->noun, ENV_OWNER);
-        root_delete(heap, local_variable_index_map);
-        if (NOUN_IS_DEFINED(args_root->noun))
-          UNSHARE(args_root, ENV_OWNER);
-        root_delete(heap, args_root);
+        root_delete(heap, args_placeholder, ENV_OWNER);
+        root_delete(heap, loop_body_placeholder, ENV_OWNER);
+        root_delete(heap, local_variable_index_map, ENV_OWNER);
+        root_delete(heap, args_root, ENV_OWNER);
 #if ARKHAM_LLVM
         // REVISIT: Deleting the function while it is referred to by the
         // module causes problems.  Figure out what (if anything) we need to
@@ -586,8 +580,7 @@ namespace jit {
               // This is the first allocation for any argument.
               // All subsequent arguments will be rooted at
               // 'args_root'.
-              args_root->noun = noun;
-              SHARE(args_root->noun, ENV_OWNER);
+              root_assign(heap, args_root, noun, ENV_OWNER);
             }
           }
     
@@ -621,29 +614,30 @@ namespace jit {
             // This is the first allocation for any address (either
             // argument or local variable).  All subsequent arguments
             // will be rooted at 'args_root'.
-            args_root->noun = noun;
-            SHARE(args_root->noun, ENV_OWNER);
+            root_assign(heap, args_root, noun, ENV_OWNER);
           }
 
           // Build a new tree with the placeholder replaced by the 
           // newly allocated stack slot index.
-          root_t *n = root_new(heap, noun);
+          root_t *root = root_new(heap, noun, ENV_OWNER);
           int i;
           for (i = depth - 1; i >= 0; --i) {
             CELLS(1);
             noun_t ancestor = *(noun_t *)vec_get(&ancestors, i);
+            noun_t next;
             if (choice[i])
-              n->noun = CELL(L(ancestor), n->noun);
+              next = CELL(L(ancestor), root->noun);
             else
-              n->noun = CELL(n->noun, R(ancestor));
-            vec_set(&ancestors, i, &(n->noun));
+              next = CELL(root->noun, R(ancestor));
+            root_assign(heap, root, next, ENV_OWNER);
+            vec_set(&ancestors, i, &(root->noun));
             END_CELLS();
           }
 
           // If we got to the root of the index map then update 
           // variable which refers to it.
-          ASSIGN(local_variable_index_map->noun, n->noun, ENV_OWNER);
-          root_delete(heap, n);
+          root_assign(heap, local_variable_index_map, root->noun, ENV_OWNER);
+          root_delete(heap, root, ENV_OWNER);
         }
 
 #if ARKHAM_USE_NURSERY
@@ -744,7 +738,7 @@ namespace jit {
       void declare_loop() {
         heap_t *heap = machine->heap;
         CELLS(1);
-        ASSIGN(local_variable_index_map->noun, CELL(
+        root_assign(heap, local_variable_index_map, CELL(
           loop_body_placeholder->noun, local_variable_index_map->noun),
           ENV_OWNER);
       }
@@ -808,7 +802,8 @@ namespace jit {
             builder->CreateStore(LLVM_NOUN(it->initial_value), it->llvm_value);
     
         Value *body = oper->compile(this);
-        if (failed) return NULL;
+        if (failed) 
+          return NULL;
     
         // Finish off the function.
         builder->CreateRet(body);
@@ -855,25 +850,28 @@ namespace jit {
 
       void prep(Node *oper) {
 #if ARKHAM_LLVM
-        builder = new IRBuilder<> (getGlobalContext());
+        if (llvm() != NULL) {
+          builder = new IRBuilder<> (getGlobalContext());
     
-        // REVISIT: calling convention fastcc? (Function::setCallingConv())
+          // REVISIT: calling convention fastcc? (Function::setCallingConv())
     
-        // Create argument list.
-        std::vector<Type*> params(1 /*XXX*/, llvm_noun_type());
+          // Create argument list.
+          std::vector<Type*> params(1 /*XXX*/, llvm_noun_type());
     
-        // Create function type.
-        FunctionType *functionType = FunctionType::get(llvm_noun_type(),
-                                                       params, false);
+          // Create function type.
+          FunctionType *functionType = FunctionType::get(llvm_noun_type(),
+                                                         params, false);
     
-        // Create function.
-        function = Function::Create(functionType, Function::PrivateLinkage,
-          std::string(FUNCTION_NAME), llvm()->module);
+          // Create function.
+          function = Function::Create(functionType, Function::PrivateLinkage,
+                                      std::string(FUNCTION_NAME),
+                                      llvm()->module);
     
-        // Create basic block.
-        BasicBlock *block = BasicBlock::Create(getGlobalContext(), "entry",
-                                               function);
-        builder->SetInsertPoint(block);
+          // Create basic block.
+          BasicBlock *block = BasicBlock::Create(getGlobalContext(), "entry",
+                                                 function);
+          builder->SetInsertPoint(block);
+        }
 #endif /* ARKHAM_LLVM */
     
         oper->prep(this);
@@ -1060,13 +1058,13 @@ namespace jit {
       }
 
       /* no-gc */
-      void dump_impl(Environment *env, FILE *fp, int indent,
+      void dump_impl(FILE *fp, int indent,
                      noun_t local_variable_initial_values,
                      jit_address_t address) {
         if (noun_get_type(local_variable_initial_values) == cell_type) {
-          dump_impl(env, fp, indent, noun_get_left(
+          dump_impl(fp, indent, noun_get_left(
             local_variable_initial_values), address * 2);
-          dump_impl(env, fp, indent, noun_get_right(
+          dump_impl(fp, indent, noun_get_right(
             local_variable_initial_values), address * 2 + 1);
         } else {
           // Allocate a local variable slot for a declared variable:
@@ -1125,28 +1123,23 @@ namespace jit {
 
     public:
       Declaration(noun_t local_variable_initial_values): inner(NULL) {
-        SHARE(local_variable_initial_values, RLYEH_OWNER);
         this->local_variable_initial_values = 
-          root_new(machine->heap, local_variable_initial_values);
-        this->local_variable_index_map = root_new(machine->heap, _UNDEFINED);
+          root_new(machine->heap, local_variable_initial_values, RLYEH_OWNER);
+        this->local_variable_index_map = 
+          root_new(machine->heap, _UNDEFINED, RLYEH_OWNER);
       }
 
       ~Declaration() {
-        if (NOUN_IS_DEFINED(local_variable_index_map->noun))
-          UNSHARE(local_variable_index_map->noun, RLYEH_OWNER);
-        UNSHARE(local_variable_initial_values->noun, RLYEH_OWNER);
-        root_delete(machine->heap, local_variable_initial_values);
-        root_delete(machine->heap, local_variable_index_map);
+        root_delete(machine->heap, local_variable_initial_values, RLYEH_OWNER);
+        root_delete(machine->heap, local_variable_index_map, RLYEH_OWNER);
         if (inner != NULL)
           delete inner;
       }
 
       void dump(Environment *env, FILE *fp, int indent) {
-        if (env->failed) return;
         indent_to(fp, indent); 
         fprintf(fp, "declare(\n"); 
-        //XXXX: only use of "env" in dump functions
-        dump_impl(env, fp, indent, local_variable_initial_values->noun,
+        dump_impl(fp, indent, local_variable_initial_values->noun,
                   get_root_address(env->local_variable_index_map->noun, 1));
         inner->dump(env, fp, indent + 1);
         indent_to(fp, indent);
@@ -1160,9 +1153,10 @@ namespace jit {
 
         {
           CELLS(pre_prep_impl(env, local_variable_index_map->noun));
-          local_variable_index_map->noun = prep_impl(env,
-            local_variable_initial_values->noun, CELLS_ARG);
-          SHARE(local_variable_index_map->noun, RLYEH_OWNER);
+          noun_t map = 
+            prep_impl(env, local_variable_initial_values->noun, CELLS_ARG);
+          root_assign(heap, local_variable_index_map, map, RLYEH_OWNER);
+          END_CELLS();
         }
 
         {
@@ -1170,8 +1164,9 @@ namespace jit {
           noun_t new_local_variable_index_map = CELL(
             local_variable_index_map->noun,
             env->local_variable_index_map->noun);
-          ASSIGN(env->local_variable_index_map->noun,
+          root_assign(heap, env->local_variable_index_map,
             new_local_variable_index_map, ENV_OWNER);
+          END_CELLS();
         }
 
         inner->prep(env);
@@ -1222,8 +1217,6 @@ namespace jit {
       }
 
       void dump(Environment *env, FILE *fp, int indent) {
-        if (env->failed) return;
-    
         indent_to(fp, indent); 
 
         switch (type) {
@@ -1399,8 +1392,6 @@ namespace jit {
       }
 
       void dump(Environment *env, FILE *fp, int indent) {
-        if (env->failed) return;
-
         indent_to(fp, indent);
         fprintf(fp, "inc(");
         subexpr->dump(env, fp, -1);
@@ -1455,8 +1446,6 @@ namespace jit {
       }
 
       void dump(Environment *env, FILE *fp, int indent) {
-        if (env->failed) return;
-    
         indent_to(fp, indent);
         fprintf(fp, "load(@%" JIT_ADDRESS_FMT ")", address);
       }
@@ -1502,8 +1491,6 @@ namespace jit {
       }
 
       void dump(Environment *env, FILE *fp, int indent) {
-        if (env->failed) return;
-    
         indent_to(fp, indent); fprintf(fp, "store(");
         subexpr->dump(env, fp, -1);
         fprintf(fp, ", @%" JIT_ADDRESS_FMT ")", address);
@@ -1566,8 +1553,6 @@ namespace jit {
       }
 
       void dump(Environment *env, FILE *fp, int indent) {
-        if (env->failed) return;
-
         for(std::vector<Store *>::iterator it = stores.begin();
             it != stores.end(); ++it) {
           if (it != stores.begin())
@@ -1634,8 +1619,6 @@ namespace jit {
       }
 
       void dump(Environment *env, FILE *fp, int indent) {
-        if (env->failed) return;
-
         indent_to(fp, indent);
         fprintf(fp, "loop(\n");
         indent_to(fp, indent + 1);
@@ -1782,23 +1765,29 @@ static void
 rlyeh_failed() {
 }
 
-#define RLYEH_ENTER(n) if (ARKHAM_TRACE_RLYEH) do { \
-  fprintf(machine->trace_file, "enter %s: ", __FUNCTION__); \
-  noun_print(machine->trace_file, n, true, false); \
-  fprintf(machine->trace_file, "\n"); \
+#define RLYEH_ENTER(n) do { \
+  if (ARKHAM_TRACE_RLYEH) { \
+    fprintf(machine->trace_file, "enter %s: ", __FUNCTION__); \
+    noun_print(machine->trace_file, n, true, false); \
+    fprintf(machine->trace_file, "\n"); \
+  } \
 } while (false)
 
-#define RLYEH_LEAVE(n, nd) if (ARKHAM_TRACE_RLYEH) do {     \
-  fprintf(machine->trace_file, "leave %s: ", __FUNCTION__); \
-  noun_print(machine->trace_file, n, true, false); \
-  fprintf(machine->trace_file, "\n"); \
+#define RLYEH_LEAVE(n, nd) do {     \
+  if (ARKHAM_TRACE_RLYEH) { \
+    fprintf(machine->trace_file, "leave %s: ", __FUNCTION__); \
+    noun_print(machine->trace_file, n, true, false); \
+    fprintf(machine->trace_file, "\n"); \
+  } \
 } while (false)
 
-#define RLYEH_FAIL() if (ARKHAM_TRACE_RLYEH) do { \
-  fprintf(machine->trace_file, "rlyeh failed: file %s function %s line %d\n", __FILE__, __FUNCTION__, __LINE__); \
-  rlyeh_failed(); \
-  RLYEH_LEAVE(rt, NULL); \
-  return NULL; \
+#define RLYEH_FAIL(result) do { \
+  if (ARKHAM_TRACE_RLYEH) { \
+    fprintf(machine->trace_file, "rlyeh failed: file %s function %s line %d\n", __FILE__, __FUNCTION__, __LINE__); \
+    rlyeh_failed(); \
+    RLYEH_LEAVE(rt, NULL); \
+  } \
+  return result; \
 } while(false)
 
 Declaration *rlyeh_decl(noun_t rt) {
@@ -1813,20 +1802,20 @@ Declaration *rlyeh_decl(noun_t rt) {
     return decl;
   }
 
-  RLYEH_FAIL();
+  RLYEH_FAIL(NULL);
 }
 
 Loop *rlyeh_simple_loop(noun_t rt) {
   RLYEH_ENTER(rt);
 
   if (!NOUN_IS_CELL(rt))
-    RLYEH_FAIL();
+    RLYEH_FAIL(NULL);
 
   noun_t l = L(rt);
   noun_t r = R(rt);
 
   if (!NOUN_IS_CELL(r))
-    RLYEH_FAIL();
+    RLYEH_FAIL(NULL);
 
   noun_t rl = L(r);
 
@@ -1868,7 +1857,7 @@ Loop *rlyeh_simple_loop(noun_t rt) {
   if (yes != NULL) delete yes;
   if (no != NULL) delete no;
 
-  RLYEH_FAIL();
+  RLYEH_FAIL(NULL);
 }
 
 Load *rlyeh_load(noun_t rt) {
@@ -1880,7 +1869,7 @@ Load *rlyeh_load(noun_t rt) {
     return load;
   }
 
-  RLYEH_FAIL();
+  RLYEH_FAIL(NULL);
 }
 
 IncrementExpression *rlyeh_inc(noun_t rt) {
@@ -1897,7 +1886,7 @@ IncrementExpression *rlyeh_inc(noun_t rt) {
     return inc;
   }
 
-  RLYEH_FAIL();
+  RLYEH_FAIL(NULL);
 }
 
 BinaryExpression *rlyeh_binop(noun_t rt, enum binop_type type) {
@@ -1928,7 +1917,7 @@ BinaryExpression *rlyeh_binop(noun_t rt, enum binop_type type) {
   if (left != NULL) delete left;
   if (right != NULL) delete right;
 
-  RLYEH_FAIL();
+  RLYEH_FAIL(NULL);
 }
 
 Store *rlyeh_store(noun_t rt, jit_address_t address) {
@@ -1945,7 +1934,7 @@ Store *rlyeh_store(noun_t rt, jit_address_t address) {
     return store;
   }
 
-  RLYEH_FAIL();
+  RLYEH_FAIL(NULL);
 }
 
 bool rlyeh_iter_impl(noun_t rt, jit_address_t address,
@@ -1953,9 +1942,9 @@ bool rlyeh_iter_impl(noun_t rt, jit_address_t address,
   RLYEH_ENTER(rt);
 
   if (address > JIT_ADDRESS_MAX)
-    return false; //XXXX: call RLYEH_FAIL
+    RLYEH_FAIL(false);
   else if (!NOUN_IS_CELL(rt))
-    return false; //XXXX: call RLYEH_FAIL
+    RLYEH_FAIL(false);
 
   noun_t l = L(rt);
   bool result;
@@ -1988,7 +1977,7 @@ Iteration *rlyeh_iter(noun_t rt) {
 
       if (!rlyeh_iter_impl(R(r), 3, iteration)) {
         delete iteration;
-        RLYEH_FAIL();
+        RLYEH_FAIL(NULL);
       } else {
         RLYEH_LEAVE(rt, iteration);
         return iteration;
@@ -1996,7 +1985,7 @@ Iteration *rlyeh_iter(noun_t rt) {
     }
   }
 
-  RLYEH_FAIL();
+  RLYEH_FAIL(NULL);
 }
 
 Node *rlyeh(noun_t rt) {
@@ -2060,6 +2049,7 @@ Node *rlyeh(noun_t rt) {
             }
           }
         }
+        break;
       case 9: {
         Iteration *iter = rlyeh_iter(r);
         RLYEH_LEAVE(rt, iter);
@@ -2069,7 +2059,7 @@ Node *rlyeh(noun_t rt) {
     }
   }
 
-  RLYEH_FAIL();
+  RLYEH_FAIL(NULL);
 }
 
 typedef struct compiled_formula {
@@ -2085,12 +2075,12 @@ typedef struct compiled_formula {
 } compiled_formula_t;
 
 void compiled_formula_init(compiled_formula_t *cf,
-                           noun_t hint,
+                           noun_t hint
 #if ARKHAM_LLVM
-                           llvm_t *llvm,
+                           , llvm_t *llvm
 #endif
 #if ARKHAM_EVAL_RLYEH
-                           Node *rlyeh
+                           , Node *rlyeh
 #endif
                            ) {
 #if ARKHAM_LLVM
@@ -2104,18 +2094,23 @@ void compiled_formula_init(compiled_formula_t *cf,
   cf->defined = true;
 }
 
-noun_t compiled_formula_exec(compiled_formula_t *cf, noun_t subject) {
+noun_t compiled_formula_exec(compiled_formula_t *cf, noun_t subject,
+                             bool first) {
   if (cf->defined) {
 #if ARKHAM_LLVM
     noun_t compiled_result = (cf->llvm->fn)(subject);
 #endif /* ARKHAM_LLVM */
 
 #if ARKHAM_EVAL_RLYEH
+    //XXX: gc-protect subject
     Environment *env = new Environment();
-    noun_t eval_result;
 
-    //XXXX: prep for eval only
     env->prep(cf->rlyeh);
+
+    if (ARKHAM_TRACE_RLYEH && first)
+      cf->rlyeh->dump(env, machine->trace_file, 0);
+
+    noun_t eval_result;
 
     if (env->failed) {
       INFO("Preparation failed: %" SATOM_FMT "\n", NOUN_AS_SATOM(cf->hint));
@@ -2186,7 +2181,6 @@ static llvm_t *load_or_compile(Node *rlyeh, satom_t index, noun_t hint) {
 
   Environment *env = new Environment(machine_jet_file(machine, index));
 
-  //XXXX: prep for compile only
   env->prep(rlyeh);
       
   if (env->failed) {
@@ -2222,18 +2216,16 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
     return _UNDEFINED; //XXX: log
 
   compiled_formula_t *compiled_formula = &compiled_formulas[index];
+  bool first = !compiled_formula->attempted;
 
-  if (!compiled_formula->attempted) {
+  if (first) {
+    //XXX: gc-protect subject, formula
     compiled_formula->attempted = true;
 
     Node *rlyeh_formula = rlyeh(formula);
 
     if (rlyeh_formula == NULL)
       return _UNDEFINED;
-
-    //XXXX: env to dump
-    if (ARKHAM_TRACE_RLYEH)
-      rlyeh_formula->dump(env, machine->trace_file, 0);
 
 #if ARKHAM_LLVM
     llvm_t *llvm = load_or_compile(rlyeh_formula, index, hint);
@@ -2248,72 +2240,15 @@ noun_t accelerate(noun_t subject, noun_t formula, noun_t hint) {
 #endif
 #endif
 
-    compiled_formula_init(compiled_formula, hint,
+    compiled_formula_init(compiled_formula, hint
 #if ARKHAM_LLVM
-                          llvm,
+                          , llvm
 #endif
 #if ARKHAM_EVAL_RLYEH
-                          rlyeh_formula
+                          , rlyeh_formula
 #endif
                           );
   }
 
-  return compiled_formula_exec(compiled_formula, subject);
+  return compiled_formula_exec(compiled_formula, subject, first);
 }
-
-// QQQ: remove
-// Node *fib_rlyeh(Environment *env) {
-//   heap_t *heap = machine->heap;
-//   CELLS(1);
-
-//   Declaration *decl_f0_f1 = new Declaration(CELL(_0, _1)); {
-//     Declaration *decl_counter = new Declaration(_0);
-//     /**/ decl_f0_f1->set_inner(decl_counter); {
-//       Loop *loop = new Loop();
-//       /**/ decl_counter->set_inner(loop); {
-//         BinaryExpression *eq = new BinaryExpression(binop_eq_type);
-//         /**/ loop->set_test(eq); {
-//           Load *eq_left = new Load(15);
-//           /**/ eq->set_left(eq_left);
-//         } {
-//           Load *eq_right = new Load(6);
-//           /**/ eq->set_right(eq_right);
-//         } 
-//       } {
-//         Load *result = new Load(28);
-//         /**/ loop->set_result(result);
-//       } {
-//         Iteration *iteration = new Iteration();
-//         /**/ loop->set_iteration(iteration); {
-//           Store *store_6 = new Store(6);
-//           /**/ iteration->add_store(store_6);
-//           IncrementExpression *inc_6 = new IncrementExpression();
-//           /**/ store_6->set_subexpr(inc_6);
-//           Load *load_6 = new Load(6);
-//           /**/ inc_6->set_subexpr(load_6);
-//         } {
-//           Store *store_28 = new Store(28);
-//           /**/ iteration->add_store(store_28);
-//           Load *load_29 = new Load(29);
-//           /**/ store_28->set_subexpr(load_29);
-//         } {
-//           Store *store_29 = new Store(29);
-//           /**/ iteration->add_store(store_29);
-//           BinaryExpression *add = new BinaryExpression(binop_add_type);
-//           /**/ store_29->set_subexpr(add);
-//           Load *add_left = new Load(28);
-//           /**/ add->set_left(add_left);
-//           Load *add_right = new Load(29);
-//           /**/ add->set_right(add_right);
-//         } {
-//           Store *store_15 = new Store(15);
-//           /**/ iteration->add_store(store_15);
-//           Load *load_15 = new Load(15);
-//           /**/ store_15->set_subexpr(load_15);
-//         }
-//       }
-//     }
-//   }
-
-//   return decl_f0_f1;
-// }

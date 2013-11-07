@@ -2,71 +2,72 @@
 # Copyright 2013 Christopher Cole
 #
 
-# On OSX/MacPorts: /opt/local/libexec/llvm-3.3/bin/llvm-config
-# On Ubuntu/Mint: /usr/lib/llvm-3.3/bin/llvm-config
-
 SRC = src
 INCLUDE = include
-ifeq ($(origin FAST), undefined)
+BUILD = build
+
+OS := $(shell uname -s)
+ifeq ($(OS),Linux)
+  PACKAGE_ROOT = /usr/local
+  CC_FLAGS = -std=c99
+  CPP_FLAGS = -std=c++11
+  LD_FLAGS = -lstdc++
+else ifeq ($(OS),Darwin)
+  PACKAGE_ROOT = /opt/local
+  CC_FLAGS = 
+  CPP_FLAGS = -std=c++11
+  LD_FLAGS = -lc++
+endif
+
+ifeq ($(origin ARKHAM_PRODUCTION), undefined)
   OPT = -O0 -g
   ARKHAM_PRODUCTION = false
 else
   OPT = -O4
   ARKHAM_PRODUCTION = true
 endif
-ifeq ($(origin LLVM), undefined)
+
+ifeq ($(origin ARKHAM_LLVM), undefined)
   ARKHAM_LLVM = false
-  LLVM_CC_FLAGS = 
-  LLVM_LINK_FLAGS =
 else
   ARKHAM_LLVM = true
-  LLVM_CC_FLAGS = `llvm-config --cflags`
-  LLVM_LINK_FLAGS = `llvm-config --libs --ldflags bitreader bitwriter core analysis executionengine jit interpreter native`
+  LLVM_ROOT = $(PACKAGE_ROOT)
+  SOURCE_FLAGS += -I$(LLVM_ROOT)/include `llvm-config --cflags`
+  LD_FLAGS += -L$(LLVM_ROOT)/lib `llvm-config --libs --ldflags bitreader bitwriter core analysis executionengine jit interpreter native`
 endif
 
-UNAME_S := $(shell uname -s)
-ifeq ($(UNAME_S),Linux)
-  CC_FLAGS = -std=c99
-  CXX_FLAGS = -std=c++11
-  CXX_LINK_FLAGS = -lstdc++
-endif
-ifeq ($(UNAME_S),Darwin)
-  PACKAGE_ROOT= /opt/local
-  LLVM_ROOT= /Users/Dad/Packages/llvm/install
-#  LLVM_ROOT= ${PACKAGE_ROOT}
-  CC_FLAGS = -I${LLVM_ROOT}/include -I${PACKAGE_ROOT}/include -I/usr/local/include
-  CXX_FLAGS = -std=c++11 -I${LLVM_ROOT}/include -I${PACKAGE_ROOT}/include -I/usr/local/include
-  CXX_LINK_FLAGS = -L${LLVM_ROOT}/lib -L${PACKAGE_ROOT}/lib -L/usr/local/lib -lc++
-endif
+SOURCE_FLAGS += -I$(INCLUDE) -I$(PACKAGE_ROOT)/include $(OPT)
+CC_FLAGS += $(SOURCE_FLAGS)
+CPP_FLAGS += $(SOURCE_FLAGS)
+LD_FLAGS += -L$(PACKAGE_ROOT)/lib $(OPT)
 
-# -lprofiler 
+C_SOURCES := $(wildcard $(SRC)/*.c)
+CPP_SOURCES := $(wildcard $(SRC)/*.cpp)
+OBJECTS := $(addprefix $(BUILD)/,$(notdir $(C_SOURCES:.c=.o) $(CPP_SOURCES:.cpp=.o)))
+LIBS = -lgmp -ljemalloc
 
-arkham: build/bin arkham.o jit.o fnv_32.o fnv_64.o mkpath.o
-	$(CXX) ${OPT} -o build/bin/arkham build/bin/arkham.o build/bin/jit.o build/bin/fnv_32.o build/bin/fnv_64.o build/bin/mkpath.o -lgmp -ljemalloc ${LLVM_LINK_FLAGS} ${CXX_LINK_FLAGS}
+all: $(BUILD)/arkham
 
-fib.bc: build/bin ${SRC}/fib.c
-	$(CC) -DARKHAM_PRODUCTION=${ARKHAM_PRODUCTION} -DARKHAM_LLVM=${ARKHAM_LLVM} ${CC_FLAGS} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/fib.c -emit-llvm -o build/bin/fib.bc
+# consider writing a properties file instead of using '-D'
 
-arkham.o: build/bin ${SRC}/arkham.c
-	$(CC) -DARKHAM_PRODUCTION=${ARKHAM_PRODUCTION} -DARKHAM_LLVM=${ARKHAM_LLVM} ${CC_FLAGS} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/arkham.c -o build/bin/arkham.o
+$(BUILD)/arkham: $(OBJECTS)
+	@mkdir -p $(@D)
+	$(CXX) -o $(BUILD)/arkham $(OBJECTS) $(LIBS) $(LD_FLAGS)
 
-mkpath.o: build/bin ${SRC}/mkpath.c
-	$(CC) ${CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/mkpath.c -o build/bin/mkpath.o
+$(BUILD)/%.o: $(SRC)/%.cpp
+	@mkdir -p $(@D)
+	$(CXX) -DARKHAM_PRODUCTION=$(ARKHAM_PRODUCTION) -DARKHAM_LLVM=$(ARKHAM_LLVM) $(CPP_FLAGS) -c $< -o $@
 
-fnv_32.o: build/bin ${SRC}/fnv_32.c
-	$(CC) ${CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/fnv_32.c -o build/bin/fnv_32.o
+$(BUILD)/%.o: $(SRC)/%.c
+	@mkdir -p $(@D)
+	$(CC) -DARKHAM_PRODUCTION=$(ARKHAM_PRODUCTION) -DARKHAM_LLVM=$(ARKHAM_LLVM) $(CC_FLAGS) -c $< -o $@
 
-fnv_64.o: build/bin ${SRC}/fnv_64.c
-	$(CC) ${CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/fnv_64.c -o build/bin/fnv_64.o
-
-jit.o: build/bin ${SRC}/jit.cpp
-	$(CXX) -DARKHAM_PRODUCTION=${ARKHAM_PRODUCTION} -DARKHAM_LLVM=${ARKHAM_LLVM} ${CXX_FLAGS} ${LLVM_CC_FLAGS} ${OPT} -I${INCLUDE} -c ${SRC}/jit.cpp -o build/bin/jit.o
-
-build/bin:
-	mkdir -p build/bin
+$(BUILD)/%.bc: $(SRC)/%.c
+	@mkdir -p $(@D)
+	$(CC) -DARKHAM_PRODUCTION=$(ARKHAM_PRODUCTION) -DARKHAM_LLVM=$(ARKHAM_LLVM) $(CC_FLAGS) -c $< -emit-llvm -o $@
 
 clean:
-	rm -rf build
+	rm -rf $(BUILD)
 
 test:
-	time (build/bin/arkham - < tests/dec4200000.nock)
+	time ($(BUILD)/arkham - < tests/dec4200000.nock)

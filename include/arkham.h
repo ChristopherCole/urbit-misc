@@ -29,6 +29,7 @@ extern "C" {
 #define FAIL(p, ...) do { if (!(p)) arkham_fail(#p, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); } while(false)
 #define ASSERT0(p) do { if (ARKHAM_ASSERT && !(p)) arkham_fail(#p, __FILE__, __FUNCTION__, __LINE__, NULL); } while(false)
 #define FAIL0(p) do { if (!(p)) arkham_fail(#p, __FILE__, __FUNCTION__, __LINE__, NULL); } while(false)
+  ///XXXX: no-- just return _UNDEFINED from run_impl
 #define CRASH(machine) arkham_crash(machine, "Crash: %s: %d\n", __FUNCTION__, __LINE__)
 #define IS_DEBUG (ARKHAM_LOG >= ARKHAM_DEBUG)
 #define DEBUG_PREFIX "DEBUG:"
@@ -47,13 +48,7 @@ extern "C" {
 #define WARN(f, ...) do { if (IS_WARN) arkham_log(WARN_PREFIX " %S %s %d: " f, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); } while (false)
 #define WARN0(s) do { if (ARKHAM_LOG >= ARKHAM_WARN) arkham_log(WARN_PREFIX " " s); } while (false)
 
-#if ARKHAM_USE_NURSERY
-#define ARKHAM_USE_NURSERY_INLINE inline
-#else
-#define ARKHAM_USE_NURSERY_INLINE
-#endif
-
-/* TODO: more details on noun/atom representation */
+/* TODO: More detailed description of noun/atom representation */
 
 static mpz_t SATOM_MAX_MPZ;
 
@@ -132,7 +127,7 @@ typedef struct old_space_cell {
 
 typedef struct batom {
   mpz_t val;
-  bool forwarded; //XXXX (use tag on mpz_t)
+  bool forwarded;
 } batom_t;
 
 typedef struct old_space_batom {
@@ -579,9 +574,12 @@ typedef void (*do_roots_fn_t)(machine_t *machine, noun_t *address,
 typedef void (*roots_hook_fn_t)(struct machine *machine,
                                 do_roots_fn_t fn, void *data, void *extra_data);
 
-root_t *root_new(heap_t *heap, noun_t noun);
+root_t *root_new(heap_t *heap, noun_t noun, noun_metainfo_t *owner);
 
-void root_delete(heap_t *heap, root_t *root);
+void root_delete(heap_t *heap, root_t *root, noun_metainfo_t *owner);
+
+void root_assign(heap_t *heap, root_t *root, noun_t noun,
+                 noun_metainfo_t *owner);
 
 noun_t accelerate(noun_t subject, noun_t formula, noun_t hint);
 

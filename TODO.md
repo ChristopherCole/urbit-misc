@@ -1,9 +1,14 @@
+High:
+* Remove ARKHAM_LLVM (assume TRUE)
+* Recover from parser error instead of exit
+Medium:
 * Output Rlyeh when saving bitcode
 * Snapshot (and jemalloc integration)
+* Exact GC (interpret stack)
+* Integrate log and trace
+Low:
 * Inflate cells when refs > 1
 * Use custom mpz allocator (portable image)
-* Recover from parser error instead of exit
-* Exact GC (interpret stack)
 * Use readline (or editline)
 * Adjustable owners array size
 * Include satoms in graph output

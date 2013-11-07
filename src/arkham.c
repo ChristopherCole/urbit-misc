@@ -49,14 +49,16 @@ noun_nop(noun_t noun) {
 #define UNSHARE(noun, o) UNSHARE_RC_SPACE(noun, o)
 #endif /* #if ARKHAM_USE_NURSERY */
 
+#define ASSIGN(l, r, o) do { \
+    noun_t old = l; l = SHARE(r, o) ; UNSHARE(old, o); \
+} while (false)
+
 enum op_t { 
-  /* real (visible) operators */
   slash_op,
   cell_op,
   inc_op,
   equals_op,
   nock_op,
-  /* fictitious (invisible) operators */
   cond_op,
   crash_op,
   ret_op
@@ -673,7 +675,7 @@ collect_garbage(size_t size) {
 #endif /* #if ARKHAM_USE_NURSERY */
 
 root_t *
-root_new(heap_t *heap, noun_t noun) {
+root_new(heap_t *heap, noun_t noun, noun_metainfo_t *owner) {
   root_t *root = calloc(1, sizeof(root_t));
   if (heap->first_root == NULL)
     heap->first_root = heap->last_root = root;
@@ -682,6 +684,8 @@ root_new(heap_t *heap, noun_t noun) {
     heap->last_root->next = root;
     heap->last_root = root;
   }
+  if (NOUN_IS_DEFINED(noun))
+    SHARE(noun, owner);
   root->noun = noun;
 #if ARKHAM_STATS
   ++heap->root_alloc;
@@ -689,8 +693,17 @@ root_new(heap_t *heap, noun_t noun) {
   return root;
 }
 
+inline void
+root_assign(heap_t *heap, root_t *root, noun_t noun, noun_metainfo_t *owner) {
+  if (NOUN_IS_DEFINED(noun))
+    SHARE(noun, owner);
+  if (NOUN_IS_DEFINED(root->noun))
+    UNSHARE(root->noun, owner);
+  root->noun = noun;
+}
+
 void
-root_delete(heap_t *heap, root_t *root) {
+root_delete(heap_t *heap, root_t *root, noun_metainfo_t *owner) {
   if (root->previous != NULL)
     root->previous->next = root->next;
   else
@@ -699,6 +712,8 @@ root_delete(heap_t *heap, root_t *root) {
     root->next->previous = root->previous;
   else
     heap->last_root = root->previous;
+  if (NOUN_IS_DEFINED(root->noun))
+    UNSHARE(root->noun, owner);
 #if ARKHAM_STATS
   ++heap->root_free;
 #endif
@@ -752,7 +767,7 @@ batom_init_ulong(batom_t *batom, unsigned long val) {
 }
 
 #if ARKHAM_USE_NURSERY
-ARKHAM_USE_NURSERY_INLINE cell_t *
+inline cell_t *
 cell_new_nursery(cell_t **cellp, noun_t left, noun_t right) {
   cell_t *cell = (*cellp)++;
   cell_init(cell, left, right);
@@ -761,7 +776,7 @@ cell_new_nursery(cell_t **cellp, noun_t left, noun_t right) {
 #endif /* #if ARKHAM_USE_NURSERY */
 
 #if ARKHAM_USE_NURSERY
-ARKHAM_USE_NURSERY_INLINE batom_t *
+inline batom_t *
 batom_new_nursery(batom_t **batomp, mpz_t val, bool clear) {
   batom_t *batom = (*batomp)++;
   batom_init(batom, val, clear);
@@ -770,7 +785,7 @@ batom_new_nursery(batom_t **batomp, mpz_t val, bool clear) {
 #endif /* #if ARKHAM_USE_NURSERY */
 
 #if ARKHAM_USE_NURSERY
-ARKHAM_USE_NURSERY_INLINE batom_t *
+inline batom_t *
 batom_new_ulong_nursery(batom_t **batomp, unsigned long val) {
   batom_t *batom = (*batomp)++;
   batom_init_ulong(batom, val);
@@ -779,7 +794,7 @@ batom_new_ulong_nursery(batom_t **batomp, unsigned long val) {
 #endif /* #if ARKHAM_USE_NURSERY */
 
 #if ARKHAM_USE_NURSERY
-ARKHAM_USE_NURSERY_INLINE batom_t *
+inline batom_t *
 batom_copy_nursery(batom_t **batomp, batom_t *batom) {
   return batom_new_nursery(batomp, batom->val, false);
 }
@@ -801,7 +816,7 @@ noun_metainfo_init(noun_metainfo_t *metainfo, heap_t *heap,
 #endif
 }
 
-static ARKHAM_USE_NURSERY_INLINE cell_t *
+static inline cell_t *
 heap_alloc_cell(heap_t *heap) {
   old_space_cell_t *old_space_cell;
 
@@ -830,7 +845,7 @@ heap_alloc_cell(heap_t *heap) {
   return &(old_space_cell->cell);
 }
 
-static ARKHAM_USE_NURSERY_INLINE batom_t *
+static inline batom_t *
 heap_alloc_batom(heap_t *heap) {
   old_space_batom_t *old_space_batom = (old_space_batom_t *)
     calloc(1, sizeof(old_space_batom_t));
@@ -850,7 +865,7 @@ noun_metainfo_free(noun_metainfo_t *metainfo) {
   metainfo->refs = ALLOC_FREE_MARKER;
 }
 
-static ARKHAM_USE_NURSERY_INLINE void
+static inline void
 heap_free_cell(heap_t *heap, cell_t *cell) {
 #if ARKHAM_USE_NURSERY
   ASSERT0(!heap_is_nursery(heap, cell));
@@ -1082,31 +1097,7 @@ noun_unshare(noun_t noun, heap_t *heap, bool toplevel) {
   }
 }
 
-/* noun_t */
-/* cell_set_left(noun_t noun, noun_t left, heap_t *heap) { */
-/*   // XXX Handle four cases: N=nursery,RC=rc-space: [N,RC] -> [N,RC] */
-/*   ASSERT0(noun_get_type(noun) == cell_type); */
-/*   cell_t *cell = noun_as_cell(noun); */
-/*   // XXX: if !logged then log */
-/*   SHARE_CHILD_RC_SPACE(left, &(cell->metainfo)); */
-/*   UNSHARE_CHILD_RC_SPACE(noun_get_left(noun), &(cell->metainfo)); */
-/*   cell->left = left; */
-/*   return CELL_AS_NOUN(cell); */
-/* } */
-
-/* noun_t */
-/* cell_set_right(noun_t noun, noun_t right, heap_t *heap) { */
-/*   // XXX Handle four cases: N=nursery,RC=rc-space: [N,RC] -> [N,RC] */
-/*   ASSERT0(noun_get_type(noun) == cell_type); */
-/*   cell_t *cell = noun_as_cell(noun); */
-/*   // XXX: if !logged then log */
-/*   SHARE_CHILD_RC_SPACE(right, &(cell->metainfo)); */
-/*   UNSHARE_CHILD_RC_SPACE(noun_get_right(noun), &(cell->metainfo)); */
-/*   cell->right = right; */
-/*   return CELL_AS_NOUN(cell); */
-/* } */
-
-ARKHAM_USE_NURSERY_INLINE cell_t *
+inline cell_t *
 cell_new_old_space(heap_t *heap, noun_t left, noun_t right) {
   cell_t *cell = heap_alloc_cell(heap);
   noun_metainfo_t *metainfo = NOUN_GET_METAINFO(CELL_AS_NOUN(cell));
@@ -1129,21 +1120,21 @@ cell_copy_origin(cell_t *cell, cell_t *from) {
 }
 #endif
 
-ARKHAM_USE_NURSERY_INLINE batom_t *
+inline batom_t *
 batom_new_old_space(heap_t *heap, mpz_t val, bool clear) {
   batom_t *batom = heap_alloc_batom(heap);
   batom_init(batom, val, clear);
   return batom;
 }
 
-ARKHAM_USE_NURSERY_INLINE batom_t *
+inline batom_t *
 batom_new_ulong_old_space(heap_t *heap, unsigned long val) {
   batom_t *batom = heap_alloc_batom(heap);
   batom_init_ulong(batom, val);
   return batom;
 }
 
-ARKHAM_USE_NURSERY_INLINE batom_t *
+inline batom_t *
 batom_copy_old_space(heap_t *heap, batom_t *batom) {
   ASSERT0(!noun_is_freed(BATOM_AS_NOUN(batom), heap));
   return batom_new_old_space(heap, batom->val, false);
@@ -1365,7 +1356,7 @@ cell_print(FILE *file, noun_t cell, bool brackets, bool metainfo) {
   ASSERT0(noun_get_type(cell) == cell_type);
   if (brackets) fprintf(file, "[");
 #if ARKHAM_ALLOC_DEBUG_PRINT
-  if (metainfo) {
+  if (metainfo && !heap_is_nursery(machine_get()->heap, noun_as_cell(cell))) {
     noun_metainfo_print_metainfo(file, "", NOUN_GET_METAINFO(cell), "");
     fprintf(file, " ");
   }
@@ -1705,9 +1696,6 @@ static noun_t parse(machine_t *machine, infile_t *input, bool *eof) {
     noun_print(file, noun, true, true); \
     fprintf(file, "\n"); \
 } while (false)
-#define ASSIGN(l, r, o) do { \
-    noun_t old = l; l = SHARE(r, o) ; UNSHARE(old, o); \
-} while (false)
 #define L(noun) noun_get_left(noun)
 #define R(noun) noun_get_right(noun)
 #define T(noun) noun_get_type(noun)
@@ -1973,7 +1961,7 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
                               noun_t root_noun) {
   heap_t *heap = machine->heap;
   FILE *file = machine->trace_file;
-  root_t *root = root_new(heap, root_noun);
+  root_t *root = root_new(heap, root_noun, ROOT_OWNER);
 
 #if ARKHAM_THREADED_INTERPRETER
   void *op_labels[] = { 
@@ -1995,15 +1983,13 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
 
 #define CALL0(o, n, cf) machine->stack = stack_push(machine->stack, \
   FRAME(cf, _UNDEFINED), /* share */ false, heap); \
-  ASSIGN(root->noun, n, ROOT_OWNER); NEXT_OP(o)
+  root_assign(heap, root, n, ROOT_OWNER); NEXT_OP(o)
 #define CALL1(o, n, cf, cd) machine->stack = stack_push(machine->stack, \
-  FRAME(cf, cd), /* share */ true, heap); ASSIGN(root->noun, n, \
+  FRAME(cf, cd), /* share */ true, heap); root_assign(heap, root, n, \
     ROOT_OWNER); NEXT_OP(o)
-#define TAIL_CALL(o, n) ASSIGN(root->noun, n, ROOT_OWNER); op = o; \
+#define TAIL_CALL(o, n) root_assign(heap, root, n, ROOT_OWNER); op = o; \
   NEXT_OP(o)
-#define RET(n) ASSIGN(root->noun, n, ROOT_OWNER); goto ret
-
-  SHARE(root->noun, ROOT_OWNER);
+#define RET(n) root_assign(heap, root, n, ROOT_OWNER); goto ret
 
   /* interpreter */
 #if ARKHAM_THREADED_INTERPRETER
@@ -2090,8 +2076,7 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
               case 6: {
                 fn_ret_t fn_ret = cond1(machine, root);
                 op = fn_ret.op;
-                UNSHARE(rt, ROOT_OWNER);
-                root->noun = fn_ret.root;
+                root_assign(heap, root, fn_ret.root, ROOT_OWNER);
                 NEXT_OP(op);
               }
               case 7: { 
@@ -2244,6 +2229,8 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
                   int msb = (sizeof(satom) * 8 - __builtin_clzl(satom) - 1);
                   satom_t mask = (1 << (msb - 1));
                   noun_t nxt = r;
+                  if (!NOUN_IS_CELL(nxt))
+                    CRASH(machine);
                   for (int i = 0; i < msb; ++i) {
                     if (mask & satom) {
                       nxt = R(nxt);
@@ -2338,18 +2325,18 @@ static noun_t arkham_run_impl(machine_t *machine, enum op_t op,
 
   ret:
     if (stack_is_empty(machine->stack)) {
-      root_noun = root->noun;
 #if ARKHAM_USE_NURSERY && ARKHAM_STATS
       collect_garbage(0);
 #endif
-      root_delete(heap, root);
+      root_noun = root->noun;
+      SHARE(root_noun, ROOT_OWNER);
+      root_delete(heap, root, ROOT_OWNER);
       return root_noun;
     } else {
       frame_t *frame = stack_current_frame(machine->stack);
       fn_ret_t fn_ret = frame->fn(machine, frame, root);
       op = fn_ret.op;
-      UNSHARE(root->noun, ROOT_OWNER);
-      root->noun = fn_ret.root;
+      root_assign(heap, root, fn_ret.root, ROOT_OWNER);
       if (op == ret_op)
         goto ret;
 #if ARKHAM_THREADED_INTERPRETER
@@ -2397,7 +2384,7 @@ static void free_atoms(heap_t *heap) {
 }
 
 static void timeval_subtract(struct timeval *elapsed, struct timeval *end, 
-                            struct timeval *start)
+                             struct timeval *start)
 {
   elapsed->tv_sec = end->tv_sec - start->tv_sec;
 
@@ -2454,14 +2441,15 @@ static void arkham_run(int n_inputs, infile_t *inputs,
     if (home_env != NULL)
       machine.home_directory = strdup(home_env);
     else {
-      int bufsize;
-      if ((bufsize = sysconf(_SC_GETPW_R_SIZE_MAX)) == -1)
-        abort(); //XXX: do something
+      int bufsize = sysconf(_SC_GETPW_R_SIZE_MAX);
+      FAIL(bufsize != -1, "Could not determine the home directory: "
+           "sysconf(_SC_GETPW_R_SIZE_MAX) == -1\n");
       
       char buffer[bufsize];
       struct passwd pwd, *result = NULL;
-      if (getpwuid_r(getuid(), &pwd, buffer, bufsize, &result) != 0 || !result)
-        abort(); //XXX: do something
+      int error = getpwuid_r(getuid(), &pwd, buffer, bufsize, &result);
+      FAIL(error == 0 && result, "Could not determine the home directory: "
+           "getpwuid_r(getuid(), ...)\n");
 
       machine.home_directory = strdup(pwd.pw_dir);
     }
@@ -2490,6 +2478,7 @@ static void arkham_run(int n_inputs, infile_t *inputs,
         if (timing_flag)
           gettimeofday(&timing_end, NULL);
         noun_print(machine.out_file, result, true, true);
+        UNSHARE(result, ROOT_OWNER);
         printf("\n");
         if (timing_flag) {
           struct timeval elapsed;
